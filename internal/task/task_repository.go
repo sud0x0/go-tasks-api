@@ -1,0 +1,684 @@
+package task
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Repository size limits (defence-in-depth validation).
+const (
+	repoMaxUserIDLength      = 64
+	repoMaxNameLength        = 200
+	repoMaxDescriptionLength = 1000
+	repoMaxOptionValueLength = 100
+)
+
+// int64SliceToArrayLiteral converts a Go []int64 to a PostgreSQL array literal string.
+// Example: []int64{0, 1, 5} -> "{0,1,5}".
+func int64SliceToArrayLiteral(slice []int64) string {
+	if len(slice) == 0 {
+		return "{}"
+	}
+	parts := make([]string, len(slice))
+	for i, v := range slice {
+		parts[i] = strconv.FormatInt(v, 10)
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// stringSliceToArrayLiteral converts a Go []string to a PostgreSQL array literal string.
+// Example: []string{"09:00", "14:30"} -> "{\"09:00\",\"14:30\"}".
+func stringSliceToArrayLiteral(slice []string) string {
+	if len(slice) == 0 {
+		return "{}"
+	}
+	parts := make([]string, len(slice))
+	for i, v := range slice {
+		// Escape quotes and backslashes, then wrap in quotes
+		escaped := strings.ReplaceAll(v, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		parts[i] = `"` + escaped + `"`
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// parseIntArrayLiteral parses a PostgreSQL array literal string to []int64.
+// Example: "{0,1,5}" -> []int64{0, 1, 5}.
+func parseIntArrayLiteral(s string) ([]int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "{}" || s == "NULL" {
+		return nil, nil
+	}
+	// Remove braces
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	result := make([]int64, len(parts))
+	for i, p := range parts {
+		v, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		result[i] = v
+	}
+	return result, nil
+}
+
+// parseStringArrayLiteral parses a PostgreSQL array literal string to []string.
+// Example: "{\"09:00\",\"14:30\"}" -> []string{"09:00", "14:30"}.
+func parseStringArrayLiteral(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "{}" || s == "NULL" {
+		return nil
+	}
+	// Remove braces
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
+		return nil
+	}
+	// Parse quoted strings
+	var result []string
+	var current strings.Builder
+	inQuotes := false
+	escaped := false
+	for _, r := range s {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		switch r {
+		case '\\':
+			escaped = true
+		case '"':
+			inQuotes = !inQuotes
+		case ',':
+			if !inQuotes {
+				result = append(result, current.String())
+				current.Reset()
+			} else {
+				current.WriteRune(r)
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 || len(result) > 0 {
+		result = append(result, current.String())
+	}
+	return result
+}
+
+// Prepared statement queries.
+const (
+	queryGetTask = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
+		FROM tasks WHERE id = $1 AND user_id = $2`
+	queryGetTasks = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
+		FROM tasks WHERE user_id = $1 AND is_active = $2 ORDER BY name ASC LIMIT $3 OFFSET $4`
+	queryGetTasksByCategoryID = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
+		FROM tasks WHERE user_id = $1 AND category_id = $2 AND is_active = $3 ORDER BY name ASC LIMIT $4 OFFSET $5`
+	queryCreateTask = `INSERT INTO tasks (user_id, category_id, name, description, answer_type)
+		VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at`
+	queryUpdateTask = `UPDATE tasks SET name = $1, description = $2, updated_at = NOW()
+		WHERE id = $3 AND user_id = $4 RETURNING id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at`
+	queryDeactivateTask      = `UPDATE tasks SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2`
+	queryCheckCategoryExists = `SELECT EXISTS(SELECT 1 FROM categories WHERE id = $1 AND user_id = $2)`
+
+	queryCreateSchedule = `INSERT INTO task_schedules (task_id, recurrence_type, recurrence_interval, days_of_week,
+		month_day, month_week, month_weekday, month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, task_id, recurrence_type, recurrence_interval, days_of_week, month_day, month_week, month_weekday,
+		month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n, created_at`
+	queryGetScheduleByTaskID = `SELECT id, task_id, recurrence_type, recurrence_interval, days_of_week, month_day,
+		month_week, month_weekday, month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n, created_at
+		FROM task_schedules WHERE task_id = $1`
+
+	queryCreateSelectOption = `INSERT INTO task_select_options (task_id, value, position) VALUES ($1, $2, $3)
+		RETURNING id, task_id, value, position, created_at`
+	queryGetSelectOptionsByTaskID = `SELECT id, task_id, value, position, created_at
+		FROM task_select_options WHERE task_id = $1 ORDER BY position ASC`
+)
+
+// taskRepository defines the interface for task data access.
+type taskRepository interface {
+	getTask(ctx context.Context, id, userID string) (Task, error)
+	getTasks(ctx context.Context, userID string, isActive bool, limit, offset int) ([]Task, error)
+	getTasksByCategoryID(ctx context.Context, userID, categoryID string, isActive bool, limit, offset int) ([]Task, error)
+	createTask(ctx context.Context, userID, categoryID, name string, description *string, answerType string) (Task, error)
+	createTaskWithScheduleAndOptions(ctx context.Context, userID, categoryID, name string, description *string, answerType string, schedule *Schedule, selectOptions []SelectOptionRequest) (WithDetails, error)
+	updateTask(ctx context.Context, id, userID, name string, description *string) (Task, error)
+	deactivateTask(ctx context.Context, id, userID string) error
+	categoryExists(ctx context.Context, categoryID, userID string) (bool, error)
+
+	createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error)
+	getScheduleByTaskID(ctx context.Context, taskID string) (*Schedule, error)
+
+	createSelectOption(ctx context.Context, taskID, value string, position int) (SelectOption, error)
+	getSelectOptionsByTaskID(ctx context.Context, taskID string) ([]SelectOption, error)
+
+	Close() error
+}
+
+// sqlTaskRepository implements taskRepository using a SQL database.
+type sqlTaskRepository struct {
+	db                           *sql.DB
+	stmtGetTask                  *sql.Stmt
+	stmtGetTasks                 *sql.Stmt
+	stmtGetTasksByCategoryID     *sql.Stmt
+	stmtCreateTask               *sql.Stmt
+	stmtUpdateTask               *sql.Stmt
+	stmtDeactivateTask           *sql.Stmt
+	stmtCheckCategoryExists      *sql.Stmt
+	stmtCreateSchedule           *sql.Stmt
+	stmtGetScheduleByTaskID      *sql.Stmt
+	stmtCreateSelectOption       *sql.Stmt
+	stmtGetSelectOptionsByTaskID *sql.Stmt
+}
+
+// NewTaskRepository creates a new taskRepository with prepared statements.
+// Panics if any statement cannot be prepared — this is a fatal startup error.
+func NewTaskRepository(db *sql.DB, _ taskLogger) taskRepository {
+	repo := &sqlTaskRepository{db: db}
+
+	var err error
+
+	repo.stmtGetTask, err = db.Prepare(queryGetTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getTask: %v", err))
+	}
+
+	repo.stmtGetTasks, err = db.Prepare(queryGetTasks)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getTasks: %v", err))
+	}
+
+	repo.stmtGetTasksByCategoryID, err = db.Prepare(queryGetTasksByCategoryID)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getTasksByCategoryID: %v", err))
+	}
+
+	repo.stmtCreateTask, err = db.Prepare(queryCreateTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare createTask: %v", err))
+	}
+
+	repo.stmtUpdateTask, err = db.Prepare(queryUpdateTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare updateTask: %v", err))
+	}
+
+	repo.stmtDeactivateTask, err = db.Prepare(queryDeactivateTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare deactivateTask: %v", err))
+	}
+
+	repo.stmtCheckCategoryExists, err = db.Prepare(queryCheckCategoryExists)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare checkCategoryExists: %v", err))
+	}
+
+	repo.stmtCreateSchedule, err = db.Prepare(queryCreateSchedule)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare createSchedule: %v", err))
+	}
+
+	repo.stmtGetScheduleByTaskID, err = db.Prepare(queryGetScheduleByTaskID)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getScheduleByTaskID: %v", err))
+	}
+
+	repo.stmtCreateSelectOption, err = db.Prepare(queryCreateSelectOption)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare createSelectOption: %v", err))
+	}
+
+	repo.stmtGetSelectOptionsByTaskID, err = db.Prepare(queryGetSelectOptionsByTaskID)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getSelectOptionsByTaskID: %v", err))
+	}
+
+	return repo
+}
+
+// Close closes all prepared statements.
+func (r *sqlTaskRepository) Close() error {
+	var errs []error
+	for _, stmt := range []*sql.Stmt{
+		r.stmtGetTask,
+		r.stmtGetTasks,
+		r.stmtGetTasksByCategoryID,
+		r.stmtCreateTask,
+		r.stmtUpdateTask,
+		r.stmtDeactivateTask,
+		r.stmtCheckCategoryExists,
+		r.stmtCreateSchedule,
+		r.stmtGetScheduleByTaskID,
+		r.stmtCreateSelectOption,
+		r.stmtGetSelectOptionsByTaskID,
+	} {
+		if err := stmt.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *sqlTaskRepository) getTask(ctx context.Context, id, userID string) (Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return Task{}, ErrInvalidInput
+	}
+
+	var t Task
+	err := r.stmtGetTask.QueryRowContext(ctx, id, userID).Scan(
+		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, ErrTaskNotFound
+		}
+		return Task{}, fmt.Errorf("getTask %s: %w", id, ErrDatabase)
+	}
+
+	if err := t.Validate(); err != nil {
+		return Task{}, fmt.Errorf("getTask validate %s: %w", id, ErrDatabase)
+	}
+	return t, nil
+}
+
+func (r *sqlTaskRepository) getTasks(ctx context.Context, userID string, isActive bool, limit, offset int) ([]Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return []Task{}, nil
+	}
+
+	rows, err := r.stmtGetTasks.QueryContext(ctx, userID, isActive, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("getTasks: %w", ErrDatabase)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return r.scanTasks(rows)
+}
+
+func (r *sqlTaskRepository) getTasksByCategoryID(ctx context.Context, userID, categoryID string, isActive bool, limit, offset int) ([]Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return []Task{}, nil
+	}
+
+	rows, err := r.stmtGetTasksByCategoryID.QueryContext(ctx, userID, categoryID, isActive, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("getTasksByCategoryID: %w", ErrDatabase)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return r.scanTasks(rows)
+}
+
+func (r *sqlTaskRepository) scanTasks(rows *sql.Rows) ([]Task, error) {
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(
+			&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+			&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanTasks: %w", ErrDatabase)
+		}
+		if err := t.Validate(); err != nil {
+			return nil, fmt.Errorf("scanTasks validate: %w", ErrDatabase)
+		}
+		tasks = append(tasks, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scanTasks rows: %w", ErrDatabase)
+	}
+
+	if len(tasks) == 0 {
+		return []Task{}, nil
+	}
+	return tasks, nil
+}
+
+func (r *sqlTaskRepository) createTask(ctx context.Context, userID, categoryID, name string, description *string, answerType string) (Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return Task{}, fmt.Errorf("createTask: %w", ErrDatabase)
+	}
+	if len(name) > repoMaxNameLength {
+		return Task{}, ErrNameTooLong
+	}
+	if description != nil && len(*description) > repoMaxDescriptionLength {
+		return Task{}, ErrDescriptionTooLong
+	}
+
+	var t Task
+	err := r.stmtCreateTask.QueryRowContext(ctx, userID, categoryID, name, description, answerType).Scan(
+		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		// Check for foreign key violation (category not found)
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return Task{}, ErrCategoryNotFound
+		}
+		return Task{}, fmt.Errorf("createTask: %w", ErrDatabase)
+	}
+
+	if err := t.Validate(); err != nil {
+		return Task{}, fmt.Errorf("createTask validate: %w", ErrDatabase)
+	}
+	return t, nil
+}
+
+func (r *sqlTaskRepository) updateTask(ctx context.Context, id, userID, name string, description *string) (Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return Task{}, ErrTaskNotFound
+	}
+	if len(name) > repoMaxNameLength {
+		return Task{}, ErrNameTooLong
+	}
+	if description != nil && len(*description) > repoMaxDescriptionLength {
+		return Task{}, ErrDescriptionTooLong
+	}
+
+	var t Task
+	err := r.stmtUpdateTask.QueryRowContext(ctx, name, description, id, userID).Scan(
+		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, ErrTaskNotFound
+		}
+		return Task{}, fmt.Errorf("updateTask %s: %w", id, ErrDatabase)
+	}
+
+	if err := t.Validate(); err != nil {
+		return Task{}, fmt.Errorf("updateTask validate %s: %w", id, ErrDatabase)
+	}
+	return t, nil
+}
+
+func (r *sqlTaskRepository) deactivateTask(ctx context.Context, id, userID string) error {
+	if len(userID) > repoMaxUserIDLength {
+		return ErrTaskNotFound
+	}
+
+	result, err := r.stmtDeactivateTask.ExecContext(ctx, id, userID)
+	if err != nil {
+		return fmt.Errorf("deactivateTask %s: %w", id, ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("deactivateTask rowsAffected %s: %w", id, ErrDatabase)
+	}
+
+	if rowsAffected == 0 {
+		return ErrTaskNotFound
+	}
+	return nil
+}
+
+func (r *sqlTaskRepository) categoryExists(ctx context.Context, categoryID, userID string) (bool, error) {
+	var exists bool
+	err := r.stmtCheckCategoryExists.QueryRowContext(ctx, categoryID, userID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("categoryExists %s: %w", categoryID, ErrDatabase)
+	}
+	return exists, nil
+}
+
+func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error) {
+	var s Schedule
+
+	// Convert slices to PostgreSQL array literals
+	daysOfWeekLiteral := int64SliceToArrayLiteral(schedule.DaysOfWeek)
+	scheduledTimesLiteral := stringSliceToArrayLiteral(schedule.ScheduledTimes)
+
+	// Scan into intermediate string variables for arrays
+	var daysOfWeekStr, scheduledTimesStr sql.NullString
+
+	err := r.stmtCreateSchedule.QueryRowContext(ctx,
+		schedule.TaskID,
+		schedule.RecurrenceType,
+		schedule.RecurrenceInterval,
+		daysOfWeekLiteral,
+		schedule.MonthDay,
+		schedule.MonthWeek,
+		schedule.MonthWeekday,
+		schedule.MonthOfYear,
+		scheduledTimesLiteral,
+		schedule.StartDate,
+		schedule.EndType,
+		schedule.EndDate,
+		schedule.EndAfterN,
+	).Scan(
+		&s.ID, &s.TaskID, &s.RecurrenceType, &s.RecurrenceInterval,
+		&daysOfWeekStr, &s.MonthDay, &s.MonthWeek, &s.MonthWeekday,
+		&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
+		&s.EndDate, &s.EndAfterN, &s.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("createSchedule: %w", ErrDatabase)
+	}
+
+	// Parse array strings back to slices
+	if daysOfWeekStr.Valid {
+		s.DaysOfWeek, _ = parseIntArrayLiteral(daysOfWeekStr.String)
+	}
+	if scheduledTimesStr.Valid {
+		s.ScheduledTimes = parseStringArrayLiteral(scheduledTimesStr.String)
+	}
+
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("createSchedule validate: %w", ErrDatabase)
+	}
+	return &s, nil
+}
+
+func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID string) (*Schedule, error) {
+	var s Schedule
+	var daysOfWeekStr, scheduledTimesStr sql.NullString
+
+	err := r.stmtGetScheduleByTaskID.QueryRowContext(ctx, taskID).Scan(
+		&s.ID, &s.TaskID, &s.RecurrenceType, &s.RecurrenceInterval,
+		&daysOfWeekStr, &s.MonthDay, &s.MonthWeek, &s.MonthWeekday,
+		&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
+		&s.EndDate, &s.EndAfterN, &s.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getScheduleByTaskID %s: %w", taskID, ErrDatabase)
+	}
+
+	// Parse array strings back to slices
+	if daysOfWeekStr.Valid {
+		s.DaysOfWeek, _ = parseIntArrayLiteral(daysOfWeekStr.String)
+	}
+	if scheduledTimesStr.Valid {
+		s.ScheduledTimes = parseStringArrayLiteral(scheduledTimesStr.String)
+	}
+
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("getScheduleByTaskID validate %s: %w", taskID, ErrDatabase)
+	}
+	return &s, nil
+}
+
+func (r *sqlTaskRepository) createSelectOption(ctx context.Context, taskID, value string, position int) (SelectOption, error) {
+	if len(value) > repoMaxOptionValueLength {
+		return SelectOption{}, ErrOptionValueTooLong
+	}
+
+	var opt SelectOption
+	err := r.stmtCreateSelectOption.QueryRowContext(ctx, taskID, value, position).Scan(
+		&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt,
+	)
+	if err != nil {
+		return SelectOption{}, fmt.Errorf("createSelectOption: %w", ErrDatabase)
+	}
+
+	if err := opt.Validate(); err != nil {
+		return SelectOption{}, fmt.Errorf("createSelectOption validate: %w", ErrDatabase)
+	}
+	return opt, nil
+}
+
+func (r *sqlTaskRepository) getSelectOptionsByTaskID(ctx context.Context, taskID string) ([]SelectOption, error) {
+	rows, err := r.stmtGetSelectOptionsByTaskID.QueryContext(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("getSelectOptionsByTaskID: %w", ErrDatabase)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var options []SelectOption
+	for rows.Next() {
+		var opt SelectOption
+		if err := rows.Scan(&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt); err != nil {
+			return nil, fmt.Errorf("getSelectOptionsByTaskID scan: %w", ErrDatabase)
+		}
+		if err := opt.Validate(); err != nil {
+			return nil, fmt.Errorf("getSelectOptionsByTaskID validate: %w", ErrDatabase)
+		}
+		options = append(options, opt)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("getSelectOptionsByTaskID rows: %w", ErrDatabase)
+	}
+
+	if len(options) == 0 {
+		return []SelectOption{}, nil
+	}
+	return options, nil
+}
+
+func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
+	ctx context.Context,
+	userID, categoryID, name string,
+	description *string,
+	answerType string,
+	schedule *Schedule,
+	selectOptions []SelectOptionRequest,
+) (WithDetails, error) {
+	// Validate inputs
+	if len(userID) > repoMaxUserIDLength {
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions: %w", ErrDatabase)
+	}
+	if len(name) > repoMaxNameLength {
+		return WithDetails{}, ErrNameTooLong
+	}
+	if description != nil && len(*description) > repoMaxDescriptionLength {
+		return WithDetails{}, ErrDescriptionTooLong
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions begin: %w", ErrDatabase)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Insert task
+	var t Task
+	err = tx.QueryRowContext(ctx, queryCreateTask, userID, categoryID, name, description, answerType).Scan(
+		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "violates foreign key constraint") {
+			return WithDetails{}, ErrCategoryNotFound
+		}
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task: %w", ErrDatabase)
+	}
+	if err := t.Validate(); err != nil {
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task validate: %w", ErrDatabase)
+	}
+
+	result := WithDetails{Task: t}
+
+	// Insert schedule
+	if schedule != nil {
+		schedule.TaskID = t.ID
+		daysOfWeekLiteral := int64SliceToArrayLiteral(schedule.DaysOfWeek)
+		scheduledTimesLiteral := stringSliceToArrayLiteral(schedule.ScheduledTimes)
+
+		var s Schedule
+		var daysOfWeekStr, scheduledTimesStr sql.NullString
+
+		err = tx.QueryRowContext(ctx, queryCreateSchedule,
+			schedule.TaskID,
+			schedule.RecurrenceType,
+			schedule.RecurrenceInterval,
+			daysOfWeekLiteral,
+			schedule.MonthDay,
+			schedule.MonthWeek,
+			schedule.MonthWeekday,
+			schedule.MonthOfYear,
+			scheduledTimesLiteral,
+			schedule.StartDate,
+			schedule.EndType,
+			schedule.EndDate,
+			schedule.EndAfterN,
+		).Scan(
+			&s.ID, &s.TaskID, &s.RecurrenceType, &s.RecurrenceInterval,
+			&daysOfWeekStr, &s.MonthDay, &s.MonthWeek, &s.MonthWeekday,
+			&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
+			&s.EndDate, &s.EndAfterN, &s.CreatedAt,
+		)
+		if err != nil {
+			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule: %w", ErrDatabase)
+		}
+
+		if daysOfWeekStr.Valid {
+			s.DaysOfWeek, _ = parseIntArrayLiteral(daysOfWeekStr.String)
+		}
+		if scheduledTimesStr.Valid {
+			s.ScheduledTimes = parseStringArrayLiteral(scheduledTimesStr.String)
+		}
+
+		if err := s.Validate(); err != nil {
+			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule validate: %w", ErrDatabase)
+		}
+		result.Schedule = &s
+	}
+
+	// Insert select options
+	if len(selectOptions) > 0 {
+		options := make([]SelectOption, 0, len(selectOptions))
+		for i, opt := range selectOptions {
+			if len(opt.Value) > repoMaxOptionValueLength {
+				return WithDetails{}, ErrOptionValueTooLong
+			}
+
+			var o SelectOption
+			err = tx.QueryRowContext(ctx, queryCreateSelectOption, t.ID, opt.Value, i).Scan(
+				&o.ID, &o.TaskID, &o.Value, &o.Position, &o.CreatedAt,
+			)
+			if err != nil {
+				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option: %w", ErrDatabase)
+			}
+			if err := o.Validate(); err != nil {
+				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option validate: %w", ErrDatabase)
+			}
+			options = append(options, o)
+		}
+		result.SelectOptions = options
+	}
+
+	if err := tx.Commit(); err != nil {
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions commit: %w", ErrDatabase)
+	}
+
+	return result, nil
+}

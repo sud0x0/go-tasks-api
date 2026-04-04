@@ -1,0 +1,1229 @@
+openapi: 3.0.3
+info:
+  title: Go Tasks API
+  description: |
+    Task and habit management API. Users register and manage their own tasks,
+    categories, daily logs, and answers. All data is scoped to the authenticated user.
+
+    ## Authentication
+
+    Protected endpoints require a valid JWT access token in the `Authorization` header
+    using the Bearer scheme. Access tokens are RS256-signed and valid for 15 minutes.
+
+    **Token Claims:**
+    - `sub` — user ID (UUID)
+    - `iss` — issuer (configured via JWT_ISSUER)
+    - `aud` — audience (configured via JWT_AUDIENCE)
+    - `exp` — expiration time
+    - `nbf` — not before time
+    - `iat` — issued at time
+    - `jti` — unique token ID (UUID)
+
+    ## Refresh Tokens
+
+    Refresh tokens are valid for 1 hour and support rotation. On use, the old token
+    is deleted and a new one is issued. Logout revokes the refresh token and adds
+    the access token's jti to a blocklist.
+
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Metrics
+    description: Prometheus metrics endpoint
+  - name: Auth
+    description: Authentication endpoints
+  - name: Log
+    description: Log entry management (legacy)
+  - name: Category
+    description: Task category management
+  - name: Task
+    description: Task management
+  - name: Occurrence
+    description: Task occurrence management
+  - name: DailyLog
+    description: Daily journal entries
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      operationId: healthCheck
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Prometheus metrics
+      description: |
+        Exposes application metrics in Prometheus text format for scraping.
+
+        **WARNING:** This endpoint has no authentication. In production, restrict access
+        via network policy, reverse proxy, or move to a separate internal port.
+      operationId: getMetrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus metrics in text format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # Auth endpoints
+  /api/v1/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register a new user
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Username already exists
+
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login and get tokens
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: Invalid credentials
+
+  /api/v1/auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: Invalid or expired refresh token
+
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout and revoke tokens
+      operationId: logout
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+      responses:
+        "204":
+          description: Logged out successfully
+
+  # Category endpoints
+  /api/v1/categories:
+    get:
+      tags:
+        - Category
+      summary: List categories
+      operationId: listCategories
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: List of categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Category"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags:
+        - Category
+      summary: Create a category
+      operationId: createCategory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryRequest"
+      responses:
+        "201":
+          description: Category created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/categories/{id}:
+    get:
+      tags:
+        - Category
+      summary: Get a category
+      operationId: getCategory
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      tags:
+        - Category
+      summary: Update a category
+      operationId: updateCategory
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryRequest"
+      responses:
+        "200":
+          description: Updated category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags:
+        - Category
+      summary: Delete a category
+      operationId: deleteCategory
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Category deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Category is in use by active tasks
+
+  # Task endpoints
+  /api/v1/tasks:
+    get:
+      tags:
+        - Task
+      summary: List tasks
+      operationId: listTasks
+      parameters:
+        - name: category_id
+          in: query
+          description: Filter by category ID
+          schema:
+            type: string
+            format: uuid
+        - name: active
+          in: query
+          description: Filter by active status (default true)
+          schema:
+            type: boolean
+            default: true
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags:
+        - Task
+      summary: Create a task
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskWithDetails"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Category not found
+
+  /api/v1/tasks/{id}:
+    get:
+      tags:
+        - Task
+      summary: Get a task with details
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Task with schedule and options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskWithDetails"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      tags:
+        - Task
+      summary: Update a task
+      operationId: updateTask
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags:
+        - Task
+      summary: Delete a task (soft delete)
+      description: Sets is_active to false instead of hard delete
+      operationId: deleteTask
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Task deactivated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # Occurrence endpoints
+  /api/v1/occurrences:
+    get:
+      tags:
+        - Occurrence
+      summary: List occurrences
+      description: |
+        Returns task occurrences for a given date or date range. Occurrences are
+        generated on demand based on task schedules.
+
+        **Required:** Either `date` OR both `start_date` and `end_date` must be provided.
+        Returns 400 if no date parameters are supplied.
+
+        Suppressed occurrences are included in the response with `is_suppressed: true`
+        so the UI can display them as skipped.
+      operationId: listOccurrences
+      parameters:
+        - name: date
+          in: query
+          description: Single day query (YYYY-MM-DD). Required if start_date/end_date not provided.
+          schema:
+            type: string
+            format: date
+        - name: start_date
+          in: query
+          description: Range query start (YYYY-MM-DD). Required with end_date if date not provided.
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          description: Range query end (YYYY-MM-DD). Required with start_date if date not provided.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: List of occurrences with details
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OccurrenceWithDetails"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/occurrences/{id}/suppress:
+    post:
+      tags:
+        - Occurrence
+      summary: Suppress an occurrence
+      description: Marks this occurrence as suppressed (skipped) for this day only
+      operationId: suppressOccurrence
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Occurrence suppressed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Occurrence already suppressed
+
+  /api/v1/occurrences/{id}/answer:
+    post:
+      tags:
+        - Occurrence
+      summary: Submit an answer
+      description: Submit or update the answer for an occurrence
+      operationId: submitAnswer
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnswerRequest"
+      responses:
+        "200":
+          description: Answer saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskAnswer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # Daily log endpoints
+  /api/v1/daily-logs:
+    get:
+      tags:
+        - DailyLog
+      summary: List daily logs
+      operationId: listDailyLogs
+      parameters:
+        - name: date
+          in: query
+          description: Single day query (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: start_date
+          in: query
+          description: Range query start (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          description: Range query end (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: List of daily logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DailyLog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags:
+        - DailyLog
+      summary: Create a daily log
+      operationId: createDailyLog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDailyLogRequest"
+      responses:
+        "201":
+          description: Daily log created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyLog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Daily log already exists for this date
+
+  /api/v1/daily-logs/{id}:
+    put:
+      tags:
+        - DailyLog
+      summary: Update a daily log
+      operationId: updateDailyLog
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDailyLogRequest"
+      responses:
+        "200":
+          description: Updated daily log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyLog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # Legacy log endpoints
+  /api/v1/logs:
+    get:
+      tags:
+        - Log
+      summary: List log entries
+      operationId: listLogs
+      parameters:
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: List of log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Log"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags:
+        - Log
+      summary: Create a log entry
+      operationId: createLog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogRequest"
+      responses:
+        "201":
+          description: Log entry created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Log"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/logs/{id}:
+    get:
+      tags:
+        - Log
+      summary: Get a log entry
+      operationId: getLog
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Log entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Log"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      tags:
+        - Log
+      summary: Update a log entry
+      operationId: updateLog
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogRequest"
+      responses:
+        "200":
+          description: Updated log entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Log"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags:
+        - Log
+      summary: Delete a log entry
+      operationId: deleteLog
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Log entry deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256-signed JWT access token
+
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  schemas:
+    # Auth schemas
+    RegisterRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+
+    LoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    RefreshRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+
+    LogoutRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          description: Seconds until access token expires
+        token_type:
+          type: string
+          example: Bearer
+
+    UserResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # Category schemas
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CategoryRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+
+    # Task schemas
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        category_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        answer_type:
+          type: string
+          enum: [string, integer, boolean, select]
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskSchedule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        recurrence_type:
+          type: string
+          enum: [once, daily, every_n_days, weekly, every_n_weeks, monthly_date, monthly_weekday, yearly]
+        recurrence_interval:
+          type: integer
+        days_of_week:
+          type: array
+          items:
+            type: integer
+        month_day:
+          type: integer
+        month_week:
+          type: integer
+        month_weekday:
+          type: integer
+        month_of_year:
+          type: integer
+        scheduled_times:
+          type: array
+          items:
+            type: string
+        start_date:
+          type: string
+          format: date
+        end_type:
+          type: string
+          enum: [never, on_date, after_n]
+        end_date:
+          type: string
+          format: date
+        end_after_n:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    TaskSelectOption:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        value:
+          type: string
+          maxLength: 100
+        position:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    TaskWithDetails:
+      type: object
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        schedule:
+          $ref: "#/components/schemas/TaskSchedule"
+        select_options:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskSelectOption"
+
+    CreateTaskRequest:
+      type: object
+      required:
+        - category_id
+        - name
+        - answer_type
+        - schedule
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        answer_type:
+          type: string
+          enum: [string, integer, boolean, select]
+        schedule:
+          $ref: "#/components/schemas/ScheduleRequest"
+        select_options:
+          type: array
+          minItems: 2
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                maxLength: 100
+
+    ScheduleRequest:
+      type: object
+      required:
+        - recurrence_type
+        - start_date
+      properties:
+        recurrence_type:
+          type: string
+          enum: [once, daily, every_n_days, weekly, every_n_weeks, monthly_date, monthly_weekday, yearly]
+        recurrence_interval:
+          type: integer
+          minimum: 1
+        days_of_week:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        month_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+        month_week:
+          type: integer
+          minimum: 1
+          maximum: 5
+        month_weekday:
+          type: integer
+          minimum: 0
+          maximum: 6
+        month_of_year:
+          type: integer
+          minimum: 1
+          maximum: 12
+        scheduled_times:
+          type: array
+          items:
+            type: string
+            pattern: "^([01]?[0-9]|2[0-3]):[0-5][0-9]$"
+        start_date:
+          type: string
+          format: date
+        end_type:
+          type: string
+          enum: [never, on_date, after_n]
+        end_date:
+          type: string
+          format: date
+        end_after_n:
+          type: integer
+          minimum: 1
+
+    UpdateTaskRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+
+    # Occurrence schemas
+    TaskOccurrence:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        schedule_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        occurrence_date:
+          type: string
+          format: date
+        scheduled_time:
+          type: string
+          format: time
+        is_suppressed:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    TaskAnswer:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        occurrence_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        answer_string:
+          type: string
+          maxLength: 500
+        answer_integer:
+          type: integer
+        answer_boolean:
+          type: boolean
+        answer_select:
+          type: string
+          format: uuid
+        answered_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OccurrenceWithDetails:
+      type: object
+      properties:
+        occurrence:
+          $ref: "#/components/schemas/TaskOccurrence"
+        task:
+          $ref: "#/components/schemas/Task"
+        select_options:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskSelectOption"
+        answer:
+          $ref: "#/components/schemas/TaskAnswer"
+
+    AnswerRequest:
+      type: object
+      properties:
+        answer_string:
+          type: string
+          maxLength: 500
+        answer_integer:
+          type: integer
+        answer_boolean:
+          type: boolean
+        answer_select:
+          type: string
+          format: uuid
+
+    # Daily log schemas
+    DailyLog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        log_date:
+          type: string
+          format: date
+        entry:
+          type: string
+          maxLength: 10000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateDailyLogRequest:
+      type: object
+      required:
+        - log_date
+        - entry
+      properties:
+        log_date:
+          type: string
+          format: date
+        entry:
+          type: string
+          maxLength: 10000
+
+    UpdateDailyLogRequest:
+      type: object
+      required:
+        - entry
+      properties:
+        entry:
+          type: string
+          maxLength: 10000
+
+    # Legacy log schemas
+    Log:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        date_and_time:
+          type: string
+          format: date-time
+        log:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    LogRequest:
+      type: object
+      required:
+        - date_and_time
+        - log
+      properties:
+        date_and_time:
+          type: string
+          format: date-time
+        log:
+          type: string
+          maxLength: 10000
+
+  responses:
+    BadRequest:
+      description: Bad request
+    Unauthorized:
+      description: Unauthorized
+    NotFound:
+      description: Resource not found

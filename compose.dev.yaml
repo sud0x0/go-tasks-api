@@ -1,0 +1,73 @@
+# ============================================================================
+# THIS IS FOR LOCAL DEVELOPMENT ONLY
+# ============================================================================
+# Requires .env file with secrets - see .env.example
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: app_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ:-Australia/Melbourne}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:Z
+      - ./migrations:/migrations:ro,Z
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: app_valkey
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data:Z
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: container.dev
+    container_name: app_api
+    volumes:
+      - .:/app:Z
+      - go_modules:/go/pkg/mod:Z
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: ${TZ:-Australia/Melbourne}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      DB_SSLMODE: ${DB_SSLMODE}
+      LOG_LEVEL: ${LOG_LEVEL}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      VALKEY_URL: ${VALKEY_URL}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH}
+      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH}
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  valkey_data:
+  go_modules:

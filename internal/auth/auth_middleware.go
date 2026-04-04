@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	applog "go-tasks-api/internal/log"
 	"go-tasks-api/internal/shared"
 )
 
@@ -72,7 +71,6 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		// Set user ID and jti in context
 		ctx = context.WithValue(ctx, UserContextKey, userID)
-		ctx = context.WithValue(ctx, applog.UserContextKey, userID) // For log handler compatibility
 		ctx = context.WithValue(ctx, JTIContextKey, jti)
 
 		next.ServeHTTP(w, r.WithContext(ctx))

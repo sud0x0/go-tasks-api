@@ -19,7 +19,6 @@ import (
 	"go-tasks-api/internal/config"
 	"go-tasks-api/internal/dailylog"
 	"go-tasks-api/internal/db"
-	applog "go-tasks-api/internal/log"
 	"go-tasks-api/internal/metrics"
 	"go-tasks-api/internal/middleware"
 	"go-tasks-api/internal/occurrence"
@@ -95,11 +94,6 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"healthy"}`))
 	})
 
-	// Wire up log domain.
-	logRepo := applog.NewLogRepository(database.SQL(), appLogger)
-	logService := applog.NewLogService(logRepo, appLogger)
-	logHandler := applog.NewLogHandler(logService, appLogger)
-
 	// Wire up auth domain.
 	authRepo := auth.NewAuthRepository(database.SQL(), appLogger)
 	authService, err := auth.NewAuthService(authRepo, appLogger, &cfg.JWT, valkeyClient)
@@ -161,13 +155,6 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Apply auth middleware to all routes in this group.
 		r.Use(authMiddleware.Handler)
-
-		// Log routes (existing).
-		r.Get("/logs", logHandler.ListLogs)
-		r.Post("/logs", logHandler.CreateLog)
-		r.Get("/logs/{id}", logHandler.GetLog)
-		r.Put("/logs/{id}", logHandler.UpdateLog)
-		r.Delete("/logs/{id}", logHandler.DeleteLog)
 
 		// Category routes.
 		r.Get("/categories", categoryHandler.ListCategories)
@@ -239,13 +226,6 @@ func main() {
 	appLogger.LogInfo("closing repositories")
 
 	start := time.Now()
-	if err := logRepo.Close(); err != nil {
-		appLogger.LogError(errors.New("log repository close error"), err)
-	} else {
-		appLogger.LogInfo("log repository closed", "duration_ms", time.Since(start).Milliseconds())
-	}
-
-	start = time.Now()
 	if err := authRepo.Close(); err != nil {
 		appLogger.LogError(errors.New("auth repository close error"), err)
 	} else {

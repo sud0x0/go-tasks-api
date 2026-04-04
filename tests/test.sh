@@ -243,7 +243,7 @@ section "4. Auth — Security (token validation)"
 # =============================================================================
 
 subsection "All protected endpoints reject missing token"
-for endpoint in "/api/v1/categories" "/api/v1/tasks" "/api/v1/daily-logs" "/api/v1/logs"; do
+for endpoint in "/api/v1/categories" "/api/v1/tasks" "/api/v1/daily-logs"; do
     get "$endpoint"
     check "GET $endpoint without token returns 401" 401 "$LAST_STATUS" "$LAST_BODY"
 done
@@ -952,116 +952,7 @@ post "/api/v1/auth/login" "{\"username\":\"$UNIQUE_USER\",\"password\":\"Passwor
 check "POST /auth/login works after logout returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
 
 # =============================================================================
-section "12. Legacy Log Domain — Full CRUD"
-# =============================================================================
-
-subsection "Login for fresh token"
-post "/api/v1/auth/login" "{\"username\":\"$UNIQUE_USER\",\"password\":\"Password123!\"}"
-check "POST /auth/login for section 12 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-FRESH_TOKEN=$(echo "$LAST_BODY" | jq -r '.access_token')
-FRESH_REFRESH=$(echo "$LAST_BODY" | jq -r '.refresh_token')
-info "Fresh token: ${FRESH_TOKEN:0:20}..."
-
-subsection "Create"
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"Legacy log entry 1.\"}" "$FRESH_TOKEN"
-check "POST /logs create returns 201" 201 "$LAST_STATUS" "$LAST_BODY"
-check_body "log has id" '.id' "$LAST_BODY"
-check_body "log has user_id" '.user_id' "$LAST_BODY"
-check_body "log has date_and_time" '.date_and_time' "$LAST_BODY"
-check_body "log content matches" '.log == "Legacy log entry 1."' "$LAST_BODY"
-check_body "log has created_at" '.created_at' "$LAST_BODY"
-LOG_ID=$(echo "$LAST_BODY" | jq -r '.id')
-
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T11:00:00Z\",\"log\":\"Legacy log entry 2.\"}" "$FRESH_TOKEN"
-check "POST /logs create second entry returns 201" 201 "$LAST_STATUS" "$LAST_BODY"
-LOG_ID_2=$(echo "$LAST_BODY" | jq -r '.id')
-
-subsection "Create validation"
-post "/api/v1/logs" "{\"log\":\"Missing date_and_time.\"}" "$FRESH_TOKEN"
-check "POST /logs missing date_and_time returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T10:00:00Z\"}" "$FRESH_TOKEN"
-check "POST /logs missing log returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-post "/api/v1/logs" "{\"date_and_time\":\"not-a-datetime\",\"log\":\"Bad date.\"}" "$FRESH_TOKEN"
-check "POST /logs invalid date_and_time format returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-post "/api/v1/logs" "{\"date_and_time\":\"$TODAY\",\"log\":\"Date only no time.\"}" "$FRESH_TOKEN"
-check "POST /logs date without time returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-LONG_LOG=$(printf 'a%.0s' {1..10001})
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"$LONG_LOG\"}" "$FRESH_TOKEN"
-check "POST /logs log 10001 chars returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-post "/api/v1/logs" '{}' "$FRESH_TOKEN"
-check "POST /logs empty body returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-subsection "Read"
-get "/api/v1/logs" "$FRESH_TOKEN"
-check "GET /logs returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "list logs returns array" '. | type == "array"' "$LAST_BODY"
-
-get "/api/v1/logs/$LOG_ID" "$FRESH_TOKEN"
-check "GET /logs/:id returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "get log content matches" '.log == "Legacy log entry 1."' "$LAST_BODY"
-
-get "/api/v1/logs/00000000-0000-0000-0000-000000000000" "$FRESH_TOKEN"
-check "GET /logs/:id non-existent returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-get "/api/v1/logs?start_date=${TODAY}T00:00:00Z&end_date=${TODAY}T23:59:59Z" "$FRESH_TOKEN"
-check "GET /logs with date range returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-
-get "/api/v1/logs?limit=1" "$FRESH_TOKEN"
-check "GET /logs?limit=1 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "GET /logs?limit=1 returns 1 result" '. | length == 1' "$LAST_BODY"
-
-get "/api/v1/logs?limit=0" "$FRESH_TOKEN"
-check "GET /logs?limit=0 returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-get "/api/v1/logs?offset=-1" "$FRESH_TOKEN"
-check "GET /logs?offset=-1 returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-subsection "Update"
-put "/api/v1/logs/$LOG_ID" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"Updated legacy log.\"}" "$FRESH_TOKEN"
-check "PUT /logs/:id returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "updated log content matches" '.log == "Updated legacy log."' "$LAST_BODY"
-
-put "/api/v1/logs/00000000-0000-0000-0000-000000000000" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"Ghost.\"}" "$FRESH_TOKEN"
-check "PUT /logs/:id non-existent returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-subsection "XSS sanitisation in log content"
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T12:00:00Z\",\"log\":\"<script>alert('xss')</script>Clean text\"}" "$FRESH_TOKEN"
-check "POST /logs XSS in content returns 201" 201 "$LAST_STATUS" "$LAST_BODY"
-XSS_LOG_CONTENT=$(echo "$LAST_BODY" | jq -r '.log')
-check_not_contains "log XSS script tag is stripped" "<script>" "$XSS_LOG_CONTENT"
-
-subsection "Delete"
-del "/api/v1/logs/$LOG_ID_2" "$FRESH_TOKEN"
-check "DELETE /logs/:id returns 204" 204 "$LAST_STATUS" "$LAST_BODY"
-
-get "/api/v1/logs/$LOG_ID_2" "$FRESH_TOKEN"
-check "GET /logs/:id deleted log returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-del "/api/v1/logs/00000000-0000-0000-0000-000000000000" "$FRESH_TOKEN"
-check "DELETE /logs/:id non-existent returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-subsection "Cross-user isolation in logs"
-UNIQUE_USER3="testuser3_$TS"
-post "/api/v1/auth/register" "{\"username\":\"$UNIQUE_USER3\",\"password\":\"Password123!\"}"
-post "/api/v1/auth/login" "{\"username\":\"$UNIQUE_USER3\",\"password\":\"Password123!\"}"
-ACCESS_TOKEN3=$(echo "$LAST_BODY" | jq -r '.access_token')
-
-get "/api/v1/logs/$LOG_ID" "$ACCESS_TOKEN3"
-check "GET user1 log with user3 token returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-del "/api/v1/logs/$LOG_ID" "$ACCESS_TOKEN3"
-check "DELETE user1 log with user3 token returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-put "/api/v1/logs/$LOG_ID" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"Hacked.\"}" "$ACCESS_TOKEN3"
-check "PUT user1 log with user3 token returns 404" 404 "$LAST_STATUS" "$LAST_BODY"
-
-# =============================================================================
-section "13. Input Sanitisation and Edge Cases"
+section "12. Input Sanitisation and Edge Cases"
 # =============================================================================
 
 subsection "XSS in various fields"
@@ -1254,11 +1145,6 @@ subsection "Select task with 11 options (over maximum)"
 post "/api/v1/tasks" "{\"category_id\":\"$CATEGORY_ID\",\"name\":\"Over Options\",\"answer_type\":\"select\",\"schedule\":{\"recurrence_type\":\"daily\",\"start_date\":\"$TODAY\",\"end_type\":\"never\"},\"select_options\":[{\"value\":\"A\"},{\"value\":\"B\"},{\"value\":\"C\"},{\"value\":\"D\"},{\"value\":\"E\"},{\"value\":\"F\"},{\"value\":\"G\"},{\"value\":\"H\"},{\"value\":\"I\"},{\"value\":\"J\"},{\"value\":\"K\"}]}" "$ACCESS_TOKEN"
 check "POST /tasks select with 11 options returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
 
-subsection "Legacy log at exactly 10000 chars"
-LOG_10000=$(printf 'a%.0s' {1..10000})
-post "/api/v1/logs" "{\"date_and_time\":\"${TODAY}T09:00:00Z\",\"log\":\"$LOG_10000\"}" "$FRESH_TOKEN"
-check "POST /logs log exactly 10000 chars returns 201" 201 "$LAST_STATUS" "$LAST_BODY"
-
 subsection "pagination limit at maximum (100)"
 get "/api/v1/categories?limit=100" "$ACCESS_TOKEN"
 check "GET /categories?limit=100 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
@@ -1266,15 +1152,9 @@ check "GET /categories?limit=100 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
 get "/api/v1/tasks?limit=100" "$ACCESS_TOKEN"
 check "GET /tasks?limit=100 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
 
-get "/api/v1/logs?limit=100" "$FRESH_TOKEN"
-check "GET /logs?limit=100 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-
 subsection "Pagination limit over maximum (101)"
 get "/api/v1/tasks?limit=101" "$ACCESS_TOKEN"
 check "GET /tasks?limit=101 returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-get "/api/v1/logs?limit=101" "$FRESH_TOKEN"
-check "GET /logs?limit=101 returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
 
 subsection "Pagination offset beyond total count returns empty array"
 get "/api/v1/categories?offset=99999" "$ACCESS_TOKEN"
@@ -1538,69 +1418,8 @@ get "/api/v1/occurrences?date=$TODAY" "$ACCESS_TOKEN"
 check_body "Occurrence response has user_id" '.[0].occurrence.user_id' "$LAST_BODY"
 
 # =============================================================================
-section "19. Legacy Log Additional Coverage"
+section "19. Verify updated_at Changes"
 # =============================================================================
-
-subsection "GET /logs with no date parameters"
-get "/api/v1/logs" "$FRESH_TOKEN"
-check "GET /logs no params returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "GET /logs no params returns array" '. | type == "array"' "$LAST_BODY"
-
-subsection "GET /logs start_date without end_date"
-get "/api/v1/logs?start_date=${TODAY}T00:00:00Z" "$FRESH_TOKEN"
-if [ "$LAST_STATUS" -eq 200 ] || [ "$LAST_STATUS" -eq 400 ]; then
-    echo -e "  ${GREEN}PASS${NC} [logs] start_date without end_date returns $LAST_STATUS (not 500)"
-    PASS=$((PASS + 1))
-else
-    echo -e "  ${RED}FAIL${NC} [logs] start_date without end_date returned $LAST_STATUS"
-    FAIL=$((FAIL + 1))
-fi
-
-subsection "GET /logs offset beyond total count"
-get "/api/v1/logs?offset=99999" "$FRESH_TOKEN"
-check "GET /logs?offset=99999 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
-check_body "GET /logs?offset=99999 returns empty array" '. | length == 0' "$LAST_BODY"
-
-subsection "Log date_and_time in the far future"
-post "/api/v1/logs" "{\"date_and_time\":\"9999-12-31T23:59:59Z\",\"log\":\"Future log.\"}" "$FRESH_TOKEN"
-if [ "$LAST_STATUS" -ne 500 ]; then
-    echo -e "  ${GREEN}PASS${NC} [logs] Far future date_and_time does not 500 (got $LAST_STATUS)"
-    PASS=$((PASS + 1))
-else
-    echo -e "  ${RED}FAIL${NC} [logs] Far future date_and_time caused 500"
-    FAIL=$((FAIL + 1))
-fi
-
-subsection "Log date_and_time in the far past"
-post "/api/v1/logs" "{\"date_and_time\":\"1900-01-01T00:00:00Z\",\"log\":\"Old log.\"}" "$FRESH_TOKEN"
-if [ "$LAST_STATUS" -ne 500 ]; then
-    echo -e "  ${GREEN}PASS${NC} [logs] Far past date_and_time does not 500 (got $LAST_STATUS)"
-    PASS=$((PASS + 1))
-else
-    echo -e "  ${RED}FAIL${NC} [logs] Far past date_and_time caused 500"
-    FAIL=$((FAIL + 1))
-fi
-
-subsection "PUT /logs/:id missing required fields"
-put "/api/v1/logs/$LOG_ID" "{\"log\":\"Missing date_and_time.\"}" "$FRESH_TOKEN"
-check "PUT /logs/:id missing date_and_time returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-put "/api/v1/logs/$LOG_ID" "{\"date_and_time\":\"${TODAY}T10:00:00Z\"}" "$FRESH_TOKEN"
-check "PUT /logs/:id missing log field returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
-
-subsection "Verify updated_at changes after PUT /logs/:id"
-get "/api/v1/logs/$LOG_ID" "$FRESH_TOKEN"
-LOG_ORIG_UPDATED=$(echo "$LAST_BODY" | jq -r '.updated_at')
-sleep 1
-put "/api/v1/logs/$LOG_ID" "{\"date_and_time\":\"${TODAY}T10:00:00Z\",\"log\":\"Checking updated_at.\"}" "$FRESH_TOKEN"
-LOG_NEW_UPDATED=$(echo "$LAST_BODY" | jq -r '.updated_at')
-if [ "$LOG_NEW_UPDATED" != "$LOG_ORIG_UPDATED" ] && [ -n "$LOG_NEW_UPDATED" ]; then
-    echo -e "  ${GREEN}PASS${NC} [updated_at] Log updated_at changed after PUT"
-    PASS=$((PASS + 1))
-else
-    echo -e "  ${RED}FAIL${NC} [updated_at] Log updated_at did not change after PUT (was: $LOG_ORIG_UPDATED, now: $LOG_NEW_UPDATED)"
-    FAIL=$((FAIL + 1))
-fi
 
 subsection "Verify updated_at changes after PUT /tasks/:id"
 get "/api/v1/tasks/$SELECT_TASK_ID" "$ACCESS_TOKEN"
@@ -1732,13 +1551,6 @@ if [ -n "$ANSWER_CREATED_AT_2" ] && [ "$ANSWER_CREATED_AT_2" = "$ANSWER_CREATED_
 else
     echo -e "  ${YELLOW}INFO${NC} [answer-created_at] created_at on re-answer: $ANSWER_CREATED_AT_2 (original: $ANSWER_CREATED_AT)"
 fi
-
-subsection "Log date_and_time year boundary — year 9000 accepted, year 9001 rejected"
-post "/api/v1/logs" "{\"date_and_time\":\"9000-12-31T23:59:59Z\",\"log\":\"Year 9000 log.\"}" "$FRESH_TOKEN"
-check "POST /logs date_and_time year 9000 (at limit) returns 201" 201 "$LAST_STATUS" "$LAST_BODY"
-
-post "/api/v1/logs" "{\"date_and_time\":\"9001-01-01T00:00:00Z\",\"log\":\"Year 9001 log.\"}" "$FRESH_TOKEN"
-check "POST /logs date_and_time year 9001 (over limit) returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
 
 # =============================================================================
 rm -f "$TMPFILE"

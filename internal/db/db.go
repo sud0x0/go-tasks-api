@@ -106,7 +106,6 @@ type TX interface {
 // requiredTables lists all tables that must exist for the application to run.
 // Update this list whenever you add a migration.
 var requiredTables = []string{
-	"logs",
 	"users",
 	"refresh_tokens",
 	"categories",

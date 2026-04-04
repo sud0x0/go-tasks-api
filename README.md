@@ -1,537 +1,350 @@
-# Go API Template
+# go-tasks-api
 
-A production-ready Go API template using Domain-Driven Design (DDD). The `log` domain is included as a working reference — copy its structure for every new domain you add.
+A task and habit management REST API built with Go. Users register, create recurring tasks across eight schedule types, log daily answers, and keep a personal journal. All data is scoped to the authenticated user.
 
----
+## Contents
 
-## Structure
-
-```
-.
-├── api/v1/openapi.yaml          # OpenAPI spec
-├── cmd/
-│   └── api/main.go              # Server entry point (routing, graceful shutdown)
-├── internal/
-│   ├── config/config.go         # Centralised configuration from environment variables
-│   ├── db/db.go                 # Database connection, pool, health check, transactions
-│   ├── log/                     # Reference domain (copy this for new domains)
-│   │   ├── log_model.go         # Domain types and request structs
-│   │   ├── log_errors.go        # Sentinel errors and logger interface alias
-│   │   ├── log_repository.go    # SQL queries, prepared statements
-│   │   ├── log_service.go       # Business logic
-│   │   ├── log_handler.go       # HTTP handlers, routing helpers
-│   │   └── log_test.go          # Integration tests using sqlmock
-│   ├── metrics/metrics.go       # Prometheus instrumentation and /metrics endpoint
-│   ├── middleware/
-│   │   ├── cors_middleware.go      # CORS for cross-origin requests
-│   │   └── security_middleware.go  # Security headers (CSP, X-Frame-Options, etc.)
-│   └── shared/
-│       ├── limits.go            # App-wide content limits and LimitExceededError
-│       ├── validation.go        # Pagination, null byte sanitisation, WriteUnauthorised
-│       └── logger/logger.go     # Canonical Logger interface (slog-based)
-├── migrations/                  # Goose SQL migrations
-├── tests/test_runner.go         # Pretty test output with JSON results
-├── compose.dev.yaml             # Local dev: Postgres + app with hot reload
-├── container.dev                # Dev container (golang:1.26-alpine + air + goose)
-├── container.prod               # Production multi-stage build (distroless, non-root, statically linked)
-├── .air.toml                    # Air live reload config
-├── .golangci.yml                # golangci-lint v2 config
-├── .pre-commit-config.yaml      # gitleaks, gofmt, golangci-lint, govulncheck, semgrep
-└── Makefile                     # All development commands
-```
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [API Overview](#api-overview)
+- [Authentication](#authentication)
+- [Recurrence Types](#recurrence-types)
+- [Answer Types](#answer-types)
+- [Database](#database)
+- [Security](#security)
+- [Code Quality](#code-quality)
+- [Make Commands](#make-commands)
 
 ---
 
-## Getting started
+## Architecture
 
-### Rename the project
+The project follows Domain-Driven Design with a layered structure. Each domain (auth, category, task, occurrence, dailylog, log) owns its handler, service, repository, model, and errors. No domain imports another domain's repository directly.
 
-Before using this template, rename the module to match your project:
-
-1. Update `go.mod` — change the module name to your module name (e.g., `module github.com/yourname/yourproject`)
-2. Find and replace all imports — replace `go-tasks-api/` with your new module path in all `.go` files
-
-### First-time setup: copies .env, installs pre-commit hooks, builds containers
-`make setup`
-
-### Start the stack (subsequent runs)
-`make run`
-
-### View logs
-`make logs`
-
-On first run, `make setup` will copy `.env.example` to `.env` and exit, asking you to fill in your values. Edit `.env` then run `make setup` again.
-
-The directory must be a git repository before running `make setup` — pre-commit requires it:
-```bash
-git init
-git add .
-git commit -m "initial commit"
+```
+cmd/api/main.go               — wiring, middleware, graceful shutdown
+internal/
+  auth/                       — registration, login, JWT, refresh tokens, blocklist
+  category/                   — task categories (CRUD)
+  task/                       — tasks with schedules and select options (CRUD)
+  occurrence/                 — on-demand occurrence generation and answers
+  dailylog/                   — one journal entry per user per day
+  config/                     — environment variable loading
+  db/                         — database connection and health check
+  metrics/                    — Prometheus instrumentation
+  middleware/                 — CORS, security headers, request logger
+  shared/                     — validation helpers, pagination, sanitisation
+migrations/                   — Goose SQL migrations
 ```
 
-Podman must also be running before `make setup` or `make run`:
+**Request flow:** HTTP request → global middleware (request ID, logger, security headers, CORS, metrics, timeout, body limit) → auth middleware (JWT validation, blocklist check) → handler (sanitise → validate → service) → service (business logic) → repository (prepared statements) → PostgreSQL.
+
+---
+
+## Tech Stack
+
+| Component | Choice |
+|---|---|
+| Language | Go 1.26 |
+| Router | chi v5 |
+| Database | PostgreSQL 16 |
+| Cache / blocklist | Valkey 8 (Redis-compatible) |
+| Auth | RS256 JWT (15 min access, 1 hr refresh with rotation) |
+| Password hashing | Argon2id (64MB, 3 iterations, 2 threads) |
+| Migrations | Goose |
+| Metrics | Prometheus |
+| Input sanitisation | bluemonday strict policy |
+| Validation | go-playground/validator |
+| Containers | Podman + podman-compose |
+| Hot reload | Air |
+
+---
+
+## Getting Started
+
+**Prerequisites:** Podman, podman-compose, Go 1.26, pre-commit, golangci-lint, govulncheck, semgrep, goose.
+
+**First time:**
+
 ```bash
-podman machine start
+cp .env.example .env
+# Edit .env and fill in your values
+make setup
 ```
 
-`make run` is your daily start command — run it each time you open the project after your machine has been off. Air handles hot reload inside the container as you save `.go` files, so you do not need to restart anything during development.
+`make setup` installs pre-commit hooks, builds containers, starts PostgreSQL and Valkey, and runs all migrations. The API is available at `http://localhost:8080` when complete.
+
+**Daily use:**
+
+```bash
+make run      # start containers and apply any pending migrations
+make logs     # tail application logs
+```
+
+**Clean slate:**
+
+```bash
+make destroy  # remove all containers, volumes, and images
+make build    # rebuild from scratch
+```
 
 ---
 
 ## Configuration
 
-All environment variables are read once at startup by the `internal/config` package and stored in a typed `Config` struct. This makes the full configuration surface visible in one place and avoids scattered `os.Getenv` calls across packages.
+All configuration is read from environment variables. Copy `.env.example` to `.env` and fill in values before running.
 
-### How it works
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | No | `8080` | HTTP server port |
+| `DB_HOST` | Yes | — | PostgreSQL host |
+| `DB_PORT` | Yes | — | PostgreSQL port |
+| `DB_USER` | Yes | — | PostgreSQL user |
+| `DB_PASSWORD` | Yes | — | PostgreSQL password |
+| `DB_NAME` | Yes | — | PostgreSQL database name |
+| `DB_SSLMODE` | No | `require` | SSL mode (`disable` for local dev) |
+| `DB_MAX_OPEN_CONNS` | No | `100` | Connection pool max open |
+| `DB_MAX_IDLE_CONNS` | No | `50` | Connection pool max idle |
+| `DB_CONN_MAX_LIFETIME_MINS` | No | `5` | Connection max lifetime (minutes) |
+| `DB_CONN_MAX_IDLE_TIME_MINS` | No | `10` | Connection max idle time (minutes) |
+| `LOG_LEVEL` | No | `development` | `development`, `production`, `quiet`, `silent` |
+| `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated origins (no wildcards in production) |
+| `VALKEY_URL` | No | `localhost:6379` | Valkey address |
+| `JWT_ISSUER` | No | `go-tasks-api` | JWT `iss` claim |
+| `JWT_AUDIENCE` | No | `go-tasks-api` | JWT `aud` claim |
+| `JWT_PRIVATE_KEY_PATH` | No | `./keys/private.pem` | RSA private key for signing |
+| `JWT_PUBLIC_KEY_PATH` | No | `./keys/public.pem` | RSA public key for verification |
 
-```go
-// cmd/api/main.go
-cfg, err := config.Load()
-if err != nil {
-    fmt.Fprintf(os.Stderr, "failed to load configuration: %v\n", err)
-    os.Exit(1)
-}
+RSA keys are generated automatically on first startup if not present. In production, generate and manage keys separately and never include them in version control or build artefacts.
 
-// Pass config to components that need it
-appLogger := logger.NewLogger(cfg.Log.Level)
-database, err := db.New(&cfg.Database, appLogger)
-```
+---
 
-### Adding a new environment variable
+## API Overview
 
-1. Add the field to the appropriate struct in `internal/config/config.go`:
+Base URL: `http://localhost:8080`
 
-```go
-type ServerConfig struct {
-    Port         string
-    ReadTimeout  time.Duration  // new field
-}
-```
+All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header except the auth endpoints listed below.
 
-2. Read the value in `Load()`:
+### Auth
 
-```go
-Server: ServerConfig{
-    Port:        getEnv("PORT", "8080"),
-    ReadTimeout: time.Duration(getEnvInt("SERVER_READ_TIMEOUT_SECS", 10)) * time.Second,
-},
-```
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/auth/register` | No | Register a new user |
+| POST | `/api/v1/auth/login` | No | Login and receive token pair |
+| POST | `/api/v1/auth/refresh` | No | Rotate refresh token |
+| POST | `/api/v1/auth/logout` | No | Revoke tokens |
 
-3. Use it via the config struct — never call `os.Getenv` directly in other packages:
+### Categories
 
-```go
-server := &http.Server{
-    ReadTimeout: cfg.Server.ReadTimeout,
-}
-```
-
-### Environment variables
-
-| Variable | Default | Description |
+| Method | Path | Description |
 |---|---|---|
-| `PORT` | `8080` | HTTP server port |
-| `LOG_LEVEL` | `development` | Log level: `development`, `production`, `quiet`, `silent` |
-| `DB_HOST` | — | PostgreSQL host (required) |
-| `DB_PORT` | — | PostgreSQL port (required) |
-| `DB_USER` | — | PostgreSQL user (required) |
-| `DB_PASSWORD` | — | PostgreSQL password (required) |
-| `DB_NAME` | — | PostgreSQL database name (required) |
-| `DB_SSLMODE` | `require` | PostgreSQL SSL mode |
-| `DB_MAX_OPEN_CONNS` | `100` | Maximum open connections |
-| `DB_MAX_IDLE_CONNS` | `50` | Maximum idle connections |
-| `DB_CONN_MAX_LIFETIME_MINS` | `5` | Maximum connection lifetime in minutes |
-| `DB_CONN_MAX_IDLE_TIME_MINS` | `10` | Maximum idle connection time in minutes |
-| `CORS_ALLOWED_ORIGINS` | — | Comma-separated allowed origins (e.g. `http://localhost:3000`) |
+| GET | `/api/v1/categories` | List categories (`limit`, `offset`) |
+| POST | `/api/v1/categories` | Create category |
+| GET | `/api/v1/categories/{id}` | Get category |
+| PUT | `/api/v1/categories/{id}` | Update category |
+| DELETE | `/api/v1/categories/{id}` | Delete category (blocked if active tasks exist) |
+
+### Tasks
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/tasks` | List tasks (`category_id`, `active`, `limit`, `offset`) |
+| POST | `/api/v1/tasks` | Create task with schedule and optional select options |
+| GET | `/api/v1/tasks/{id}` | Get task with schedule and select options |
+| PUT | `/api/v1/tasks/{id}` | Update task name and description |
+| DELETE | `/api/v1/tasks/{id}` | Soft delete (sets `is_active = false`) |
+
+### Occurrences
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/occurrences` | Generate and list occurrences (`date` or `start_date` + `end_date` required) |
+| POST | `/api/v1/occurrences/{id}/answer` | Submit or update an answer |
+| POST | `/api/v1/occurrences/{id}/suppress` | Mark occurrence as skipped for this day |
+
+### Daily Logs
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/daily-logs` | List logs (`date` or `start_date` + `end_date`; defaults to today) |
+| POST | `/api/v1/daily-logs` | Create journal entry (one per day) |
+| PUT | `/api/v1/daily-logs/{id}` | Update journal entry |
+
+### Health and Metrics
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Health check (includes database ping) |
+| GET | `/metrics` | No | Prometheus metrics — restrict in production |
 
 ---
 
 ## Authentication
 
-Authentication is **intentionally not implemented** in this template. Auth requirements vary significantly between projects (OAuth, OIDC, API keys, mTLS, etc.), so this template defines the **auth contract** instead — any middleware that validates a token and sets `user_id` in the request context will work automatically.
+The API uses RS256-signed JWTs. On login, two tokens are issued: a short-lived access token (15 minutes) and a longer-lived refresh token (1 hour).
 
-### The auth contract
+**Access token** — send in the `Authorization: Bearer <token>` header on every protected request. Claims include `sub` (user ID), `iss`, `aud`, `exp`, `nbf`, `iat`, and `jti`.
 
-1. **Context key** — use `applog.UserContextKey` to set the authenticated user ID in the request context
-2. **Repository scoping** — all repository queries are already scoped by `user_id`, so ownership enforcement is in place
-3. **TODO marker** — the `TODO` comment in `cmd/api/main.go` marks exactly where auth middleware plugs in
-4. **401 handling** — `shared.WriteUnauthorised` and handler error mapping are ready to use
+**Refresh token** — opaque 32-byte random value stored as a SHA-256 hash in PostgreSQL. On use, the old token is deleted and a new pair is issued (rotation). If the same refresh token is used twice, the second attempt is rejected.
 
-### Implementing auth
+**Logout** — deletes the refresh token from the database and adds the access token's `jti` to a Valkey blocklist with a TTL matching the token's remaining lifetime. The blocklist is checked on every authenticated request.
 
-Wire your auth middleware in `cmd/api/main.go` where the TODO comment is:
+**Token lifecycle:**
 
-```go
-r.Route("/api/v1", func(r chi.Router) {
-    // TODO: Wire auth middleware here. Any middleware that validates a token
-    // and sets user_id in the request context using applog.UserContextKey
-    // will work automatically. All repository queries are scoped by user_id.
-    r.Use(authMiddleware.Handler)
-
-    r.Get("/logs", logHandler.ListLogs)
-    // ...
-})
 ```
+POST /auth/login
+  → access_token (15 min) + refresh_token (1 hr)
 
-Your middleware must set the user ID in context:
+POST /auth/refresh  { refresh_token }
+  → new access_token + new refresh_token
+  → old refresh_token is deleted
 
-```go
-ctx := context.WithValue(r.Context(), applog.UserContextKey, userID)
-next.ServeHTTP(w, r.WithContext(ctx))
+POST /auth/logout  { refresh_token }  + Authorization: Bearer <access_token>
+  → refresh_token deleted from database
+  → access_token jti added to Valkey blocklist
 ```
-
-### Recommended libraries
-
-- [`github.com/coreos/go-oidc/v3`](https://github.com/coreos/go-oidc) — OIDC client and token verification
-- [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2) — OAuth 2.0 client
-
-### Claims to validate
-
-When implementing JWT validation, verify these claims:
-
-| Claim | Validation |
-|-------|------------|
-| `iss` | Must match your expected issuer |
-| `aud` | Must match your API identifier |
-| `exp` | Must not be expired |
-| `nbf` | Must not be used before this time |
-| `alg` | **Server-side whitelist only** — never read from token header. Enforce RS256. |
-| `kid` | Must match a key in your JWKS |
-
-See the [OWASP JWT Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html) for comprehensive JWT security guidance.
 
 ---
 
-## Adding a new domain
+## Recurrence Types
 
-The `log` domain is the pattern to follow. Every domain is fully self-contained — no cross-domain imports. Copy the folder and rename all files and symbols.
+Tasks have one of eight recurrence schedules, configured at creation. The schedule cannot be changed after creation — deactivate the task and create a new one if a schedule change is needed.
 
-### 1. Create the domain folder
+| Type | Required fields | Description |
+|---|---|---|
+| `once` | `start_date` | Appears once on `start_date` only |
+| `daily` | `start_date` | Every day from `start_date` |
+| `every_n_days` | `start_date`, `recurrence_interval` | Every N days |
+| `weekly` | `start_date`, `days_of_week` | Specific days of the week (0=Sun, 6=Sat) |
+| `every_n_weeks` | `start_date`, `recurrence_interval`, `days_of_week` | Specific days every N weeks |
+| `monthly_date` | `start_date`, `month_day` | Same date each month (1–31) |
+| `monthly_weekday` | `start_date`, `month_week`, `month_weekday` | Nth weekday of the month (e.g. 2nd Tuesday) |
+| `yearly` | `start_date`, `month_day`, `month_of_year` | Same date each year |
 
-```bash
-cp -r internal/log internal/order
-```
+All schedules support three end conditions via `end_type`: `never`, `on_date` (requires `end_date`), or `after_n` (requires `end_after_n`).
 
-Rename every file:
+Scheduled times (`scheduled_times: ["09:00", "21:00"]`) are optional. If provided, one occurrence is generated per time slot. If omitted, one untimed occurrence is generated per matching day.
 
-```
-internal/order/
-├── order_model.go
-├── order_errors.go
-├── order_repository.go
-├── order_service.go
-├── order_handler.go
-└── order_test.go
-```
+---
 
-### 2. Update each file
+## Answer Types
 
-**`order_model.go`** — define your domain struct and request type:
+Each task has a fixed `answer_type` set at creation. Submitting an answer of a different type returns 400.
 
-```go
-type Order struct {
-    ID        string    `json:"id"`
-    UserID    string    `json:"user_id"`
-    Total     int       `json:"total"`
-    CreatedAt time.Time `json:"created_at"`
-    UpdatedAt time.Time `json:"updated_at"`
-}
+| Type | Answer field | Constraints |
+|---|---|---|
+| `boolean` | `answer_boolean` | `true` or `false` |
+| `integer` | `answer_integer` | Any integer including negative |
+| `string` | `answer_string` | Max 500 characters |
+| `select` | `answer_select` | UUID of a valid option for this task |
 
-type OrderRequest struct {
-    Total int `json:"total" validate:"required,gt=0"`
-}
-```
+Select tasks require 2–10 options at creation. Options are fixed — to change them, deactivate the task and create a new one.
 
-**`order_errors.go`** — define sentinel errors for your domain. The logger alias is already correct:
+Answers are upserted — submitting a second answer for the same occurrence replaces the first. `created_at` is preserved, `updated_at` and `answered_at` are updated.
 
-```go
-type logLogger = logger.Logger
-
-var (
-    ErrOrderNotFound = errors.New("order not found")
-    ErrDatabase      = errors.New("database error")
-    // ...
-)
-```
-
-**`order_repository.go`** — write your SQL queries as constants, prepare them all in `NewOrderRepository`, and remove the `if stmt != nil` pattern — always panic on prepare failure:
-
-```go
-const queryGetOrder = `SELECT id, user_id, total, created_at, updated_at FROM orders WHERE id = $1 AND user_id = $2`
-
-func NewOrderRepository(db *sql.DB, log logLogger) orderRepository {
-    repo := &sqlOrderRepository{logger: log}
-    var err error
-    repo.stmtGetOrder, err = db.Prepare(queryGetOrder)
-    if err != nil {
-        panic(fmt.Sprintf("order_repository: failed to prepare getOrder: %v", err))
-    }
-    // ...
-    return repo
-}
-```
-
-**`order_service.go`** — business logic only. No HTTP, no SQL. Validate inputs and call the repository:
-
-```go
-func (s *defaultOrderService) getOrder(ctx context.Context, id, userID string) (Order, error) {
-    if id == "" || userID == "" {
-        return Order{}, ErrMissingParameters
-    }
-    return s.repo.getOrder(ctx, id, userID)
-}
-```
-
-**`order_handler.go`** — HTTP only. Parse request, call service, write response. The `responseJSON` helper marshals to a buffer before writing the header, preventing partial responses on encode errors. Keep this pattern:
-
-```go
-func NewOrderHandler(service orderService, log logLogger) *OrderHandler {
-    return &OrderHandler{
-        service:   service,
-        logger:    log,
-        validate:  validator.New(),
-        sanitiser: bluemonday.StrictPolicy(),
-    }
-}
-```
-
-Authentication is wired via context. Use `getUserID()` (defined in your handler file) to retrieve the user ID:
-
-```go
-userID := getUserID(r.Context())
-if userID == "" {
-    h.handleError(w, ErrUnauthorised)
-    return
-}
-```
-
-The auth middleware (which you implement per-project) sets `UserContextKey` in the request context after validating the access token.
-
-### 3. Write a migration
-
-```sql
--- migrations/00002_create_orders.sql
--- +goose Up
--- +goose StatementBegin
-CREATE TABLE orders (
-    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    UUID        NOT NULL,
-    total      INTEGER     NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_orders_user_id ON orders(user_id);
-
-CREATE TRIGGER update_orders_updated_at
-    BEFORE UPDATE ON orders
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
--- +goose StatementEnd
-
--- +goose Down
--- +goose StatementBegin
-DROP TABLE IF EXISTS orders CASCADE;
--- +goose StatementEnd
-```
-
-Add `"orders"` to `requiredTables` in `internal/db/db.go`:
-
-```go
-var requiredTables = []string{
-    "logs",
-    "orders",
-}
-```
-
-### 4. Wire it up in `cmd/api/main.go`
-
-```go
-orderRepo    := order.NewOrderRepository(database.SQL(), appLogger)
-orderService := order.NewOrderService(orderRepo, appLogger)
-orderHandler := order.NewOrderHandler(orderService, appLogger)
-
-r.Route("/api/v1", func(r chi.Router) {
-    r.Get("/orders/{id}", orderHandler.GetOrder)
-    r.Post("/orders",     orderHandler.CreateOrder)
-    // ...
-})
-```
-
-Append to the graceful shutdown block:
-
-```go
-if err := orderRepo.Close(); err != nil {
-    fmt.Println("Order repository close error:", err)
-}
-```
-
-### 5. Add to the OpenAPI spec
-
-Document the new endpoints in `api/v1/openapi.yaml` following the existing `Log` schema pattern.
+Suppressed occurrences still accept answers. Suppression marks a task as deliberately skipped but does not prevent recording data.
 
 ---
 
 ## Database
 
-The `DB` struct in `internal/db/db.go` wraps `*sql.DB` and is passed explicitly to repositories. There are no package-level globals. This makes testing straightforward — pass a `*sql.DB` backed by `sqlmock` in tests.
+Three migrations in `migrations/`:
 
-Database configuration is handled by the `internal/config` package — see the [Configuration](#configuration) section for all available environment variables.
+- `00001_initial_schema.sql` — legacy logs table
+- `00002_task_manager.sql` — users, refresh tokens, categories, tasks, schedules, select options, occurrences, answers, daily logs
+- `00003_fix_occurrence_unique.sql` — partial unique indexes for NULL-safe occurrence deduplication
 
-At startup, `db.New()` verifies that all tables in `requiredTables` exist. If any are missing it prints a clear error and exits. Run `make db-migrate` before starting the app.
+Run migrations with `make db-migrate`. Roll back with `make db-reset`. Check status with `make db-status`.
 
-`WithTransaction` is available on the `DB` struct for multi-step operations:
+All migrations are managed by Goose and run inside the app container.
 
-```go
-err := database.WithTransaction(ctx, func(tx *sql.Tx) error {
-    // all operations here are atomic
-    return nil
-})
-```
+**Occurrence generation** follows the iCalendar materialised occurrence pattern — occurrences are generated on demand when `GET /occurrences` is called and upserted into `task_occurrences`. Calling the same date twice is idempotent.
 
 ---
 
-## Observability
+## Security
 
-### Prometheus metrics
+- **Passwords** — Argon2id with 64MB memory, 3 iterations, 2 threads, random 16-byte salt per password. Constant-time comparison on verification.
+- **JWT signing** — RS256 only. Algorithm is whitelisted in the verifier — the `alg` header from the token is never trusted.
+- **Refresh tokens** — stored as SHA-256 hashes only. The plaintext token is never stored.
+- **Blocklist** — revoked access token JTIs are stored in Valkey with TTL equal to the token's remaining lifetime. Checked on every authenticated request.
+- **Input sanitisation** — all string inputs are processed through bluemonday strict policy, null byte stripping, and HTML unescape before validation. Passwords are not sanitised.
+- **Request limits** — 1MB body limit, 60-second global timeout, read header timeout 5s, write timeout 30s.
+- **Security headers** — `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+- **CORS** — explicit origin allowlist from `CORS_ALLOWED_ORIGINS`. Wildcards are not supported.
+- **Pagination** — limit capped at 100, offset capped at 10,000. Non-integer values return 400.
 
-The application exposes a `/metrics` endpoint in Prometheus text format. All HTTP requests are automatically instrumented.
-
-**WARNING:** The `/metrics` endpoint has no authentication. In production, restrict access via network policy, reverse proxy, or move to a separate internal port. Exposed metrics can reveal system internals.
-
-**Available metrics:**
-
-| Metric | Type | Description |
-|---|---|---|
-| `http_requests_total` | Counter | Total HTTP requests by method, path, and status code |
-| `http_request_duration_seconds` | Histogram | Request duration with buckets from 5ms to 10s |
-| `http_requests_in_flight` | Gauge | Current number of requests being processed |
-| `http_response_size_bytes` | Histogram | Response size in bytes |
-
-**Path normalisation:** UUIDs and numeric IDs in paths are replaced with `:id` to prevent label cardinality explosion. For example, `/api/v1/logs/550e8400-e29b-41d4-a716-446655440000` becomes `/api/v1/logs/:id`.
-
-### Adding custom metrics
-
-Add new metrics in `internal/metrics/metrics.go`:
-
-```go
-// Add to the Metrics struct
-myCounter *prometheus.CounterVec
-
-// Register in New()
-m.myCounter = prometheus.NewCounterVec(
-    prometheus.CounterOpts{
-        Name: "my_custom_metric_total",
-        Help: "Description of what this metric measures.",
-    },
-    []string{"label1", "label2"},
-)
-prometheus.MustRegister(m.myCounter)
-
-// Use it in your code
-appMetrics.myCounter.WithLabelValues("value1", "value2").Inc()
-```
-
-### What is not included — and why
-
-The Prometheus **server** and **Grafana** are not in this repository, and that is intentional.
-
-Your application is a metrics *producer*. Prometheus and Grafana are the *consumers*. These are different concerns and should live in different repositories:
-
-- Grafana dashboard JSON changes when you change what you want to graph — not when you change business logic. Coupling them forces unrelated commits.
-- Prometheus config changes when your deployment topology changes — when you add a new service, scale horizontally, or add a staging environment. That is an infrastructure concern, not an application concern.
-- In any real deployment you want **one** observability stack watching **multiple** services. If Prometheus lives inside each app's repo, that becomes impossible.
-
-The pattern used by mature projects (including PocketBase, Caddy, and Gitea) is: the application exposes `/metrics`, and a separate infrastructure repository owns the Prometheus and Grafana configuration that scrapes it.
-
-Create a separate `<your-project>-infra` repository with a `compose.yaml` that brings up Prometheus and Grafana pointed at your running application.
+**Known limitations:** No application-level brute-force protection on login — implement this at the infrastructure layer (reverse proxy, WAF, or rate-limiting middleware). The `/metrics` endpoint has no authentication — restrict it via network policy or reverse proxy in production.
 
 ---
 
-## HTTP security headers
+## Code Quality
 
-The `SecurityHeaders` middleware in `internal/middleware/security_middleware.go` sets these headers on all responses. See [MDN's Security Practical Implementation Guides](https://developer.mozilla.org/en-US/docs/Web/Security/Practical_implementation_guides) for detailed explanations.
+Pre-commit hooks run automatically on every commit:
 
-| Header | Value | Purpose |
-|---|---|---|
-| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` | Strict CSP for JSON APIs; `frame-ancestors` prevents iframe embedding |
-| `X-Content-Type-Options` | `nosniff` | Prevents MIME-sniffing |
-| `Cache-Control` | `no-store` | Prevents caching of authenticated responses |
-| `Referrer-Policy` | `no-referrer` | Prevents URL/token leakage |
+- `gofmt` — formatting
+- `golangci-lint` — linting (govet, staticcheck, errcheck, gosec, and others — see `.golangci.yml`)
+- `govulncheck` — known vulnerability scan on `go.mod` / `go.sum` changes
+- `semgrep` — static security analysis
+- `gitleaks` — secrets detection
 
-### CORS
-
-The `CORS` middleware in `internal/middleware/cors_middleware.go` handles cross-origin requests. Configure allowed origins via `CORS_ALLOWED_ORIGINS` (comma-separated).
-
-- Never use `*` in production — always specify explicit origins
-- If your API has no browser clients (server-to-server only), remove the CORS middleware entirely
-
-### Handled at infrastructure layer
-
-**Strict-Transport-Security (HSTS)** — belongs at your reverse proxy or load balancer, not the app. Your app runs HTTP inside the container; TLS termination happens outside it.
-
-**X-Request-ID** — already added by chi's `middleware.RequestID`.
-
-**Rate limiting** — implement at your reverse proxy, API gateway, or load balancer (e.g., nginx `limit_req`, Cloudflare, AWS WAF). Infrastructure-level rate limiting is more effective because it can reject requests before they reach your application, protecting against resource exhaustion. Application-level rate limiting requires additional state management (Redis/Valkey) and still consumes application resources for every request.
-
----
-
-## Coding security rules
-
-All code in this template must follow these rules:
-
-1. **Sanitise before validate** — every user input must be sanitised before validation
-2. **Type and validate inputs** — every user input must be assigned to a type and validated against that type before use
-3. **Validate database inputs** — every value going to the database must be validated against its type before the query is executed
-4. **Validate database outputs** — every value coming from the database must be validated against its type before use
-5. **Authenticate by default** — every API endpoint must require authentication unless explicitly excluded
-6. **Authorise in repository** — in the repository layer, always check that the authenticated user is authorised to access the requested data before returning it
-7. **Validate file uploads** — every file upload must be validated against its MIME type, file extension, and size limit
-
----
-
-## Security tooling
-
-Pre-commit hooks run on every commit:
-
-| Hook | What it catches |
-|---|---|
-| `gitleaks` | Secrets accidentally committed |
-| `gofmt` | Formatting violations |
-| `golangci-lint` | Static analysis, security checks (gosec), style |
-| `govulncheck` | Known CVEs in your dependencies |
-| `semgrep` | Security anti-patterns |
-
-Run all hooks manually at any time:
+Run all hooks manually:
 
 ```bash
 make pre-commit-run
 ```
 
-Run security scans individually:
+Run individual tools:
 
 ```bash
-make vulncheck   # govulncheck ./...
-make semgrep     # semgrep --config=auto
+make lint        # golangci-lint
+make vet         # go vet
+make vulncheck   # govulncheck
+make semgrep     # semgrep
+make socket      # Socket.dev supply chain scan (requires npm install -g socket)
 ```
 
 ---
 
-## Makefile reference
+## Make Commands
 
-| Command | Description |
-|---|---|
-| `make setup` | First-time setup: copy `.env`, install hooks, build containers |
-| `make build` | Build containers and run migrations |
-| `make run` | Start containers and run migrations |
-| `make logs` | Tail application logs |
-| `make destroy` | Remove all containers, volumes, and images |
-| `make db-migrate` | Run pending migrations |
-| `make db-reset` | Roll back all migrations |
-| `make db-status` | Check migration status |
-| `make test` | Run all tests |
-| `make test-pretty` | Run tests with formatted table output |
-| `make lint` | Run golangci-lint |
-| `make fmt` | Format all Go files |
-| `make vet` | Run go vet |
-| `make vulncheck` | Run govulncheck |
-| `make semgrep` | Run semgrep |
-| `make pre-commit-run` | Run all pre-commit hooks against all files |
+```
+Development
+  setup            First-time setup: copies .env, installs hooks, builds containers
+  build            Build containers and run migrations
+  run              Start containers and run migrations
+  logs             View application logs
+  destroy          Destroy all containers, volumes, and images
+
+Database
+  db-migrate       Run pending migrations
+  db-reset         Rollback all migrations
+  db-status        Check migration status
+  db-wait          Wait for database to be ready
+
+Code Quality
+  test             Run all tests
+  test-pretty      Run tests with formatted table output
+  lint             Run golangci-lint
+  fmt              Format all Go files
+  vet              Run go vet
+  pre-commit-run   Run all pre-commit hooks against all files
+  vulncheck        Run govulncheck
+  semgrep          Run semgrep security scan
+  socket           Run Socket.dev supply chain scan
+
+Typical workflow
+  First time:  make setup
+  Daily:       make run → make logs
+  Fresh start: make destroy → make build
+```
+
+---
+
+## TODO
+- Add email based MFA
+- User account update (name, theme, accent colour)
+- User delete
+- Test script to work with MFA

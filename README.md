@@ -345,6 +345,11 @@ Typical workflow
 ---
 
 ## TODO
+- Category: If the same name exist, block the creation.
+- Delete daily logs
+- Hard delete for tasks
+- If occurrence is suppressed, newly submitted answers should be denied.
+- Password 8 Character limit must include 1 upper case character, 1 lower case character, a number and a special character.
 - Add email based MFA
 - User account update (name, theme, accent colour)
 - User delete

@@ -30,6 +30,7 @@ func RequestLogger(log logger.Logger) func(http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"status", ww.Status(),
 				"duration_ms", duration.Milliseconds(),
+				"ip", r.RemoteAddr,
 			)
 
 			if duration > 5*time.Second {

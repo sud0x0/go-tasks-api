@@ -955,6 +955,13 @@ check "POST /auth/login works after logout returns 200" 200 "$LAST_STATUS" "$LAS
 section "12. Input Sanitisation and Edge Cases"
 # =============================================================================
 
+subsection "Login for fresh token"
+post "/api/v1/auth/login" "{\"username\":\"$UNIQUE_USER\",\"password\":\"Password123!\"}"
+check "POST /auth/login for section 12 returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
+FRESH_TOKEN=$(echo "$LAST_BODY" | jq -r '.access_token')
+FRESH_REFRESH=$(echo "$LAST_BODY" | jq -r '.refresh_token')
+info "Fresh token: ${FRESH_TOKEN:0:20}..."
+
 subsection "XSS in various fields"
 post "/api/v1/categories" '{"name":"<img src=x onerror=alert(1)>"}' "$FRESH_TOKEN"
 XSS2_STATUS="$LAST_STATUS"

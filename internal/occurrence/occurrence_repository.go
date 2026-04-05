@@ -110,7 +110,7 @@ const (
 		RETURNING id, occurrence_id, user_id, answer_string, answer_integer, answer_boolean, answer_select, answered_at, created_at, updated_at`
 
 	queryGetTask = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
-		FROM tasks WHERE id = $1`
+		FROM tasks WHERE id = $1 AND user_id = $2`
 	queryGetActiveSchedulesByDate = `SELECT ts.id, ts.task_id, ts.recurrence_type, ts.recurrence_interval, ts.days_of_week,
 		ts.month_day, ts.month_week, ts.month_weekday, ts.month_of_year, ts.scheduled_times, ts.start_date,
 		ts.end_type, ts.end_date, ts.end_after_n, ts.created_at
@@ -118,9 +118,9 @@ const (
 		JOIN tasks t ON ts.task_id = t.id
 		WHERE t.user_id = $1 AND t.is_active = true AND ts.start_date <= $2
 		AND (ts.end_type = 'never' OR (ts.end_type = 'on_date' AND ts.end_date >= $2) OR ts.end_type = 'after_n')`
-	queryGetSelectOptions        = `SELECT id, task_id, value, position, created_at FROM task_select_options WHERE task_id = $1 ORDER BY position`
-	queryCheckSelectOptionExists = `SELECT EXISTS(SELECT 1 FROM task_select_options WHERE id = $1 AND task_id = $2)`
-	queryCountOccurrences        = `SELECT COUNT(*) FROM task_occurrences WHERE schedule_id = $1 AND is_suppressed = false`
+	queryGetSelectOptions        = `SELECT tso.id, tso.task_id, tso.value, tso.position, tso.created_at FROM task_select_options tso JOIN tasks t ON tso.task_id = t.id WHERE tso.task_id = $1 AND t.user_id = $2 ORDER BY tso.position`
+	queryCheckSelectOptionExists = `SELECT EXISTS(SELECT 1 FROM task_select_options tso JOIN tasks t ON tso.task_id = t.id WHERE tso.id = $1 AND tso.task_id = $2 AND t.user_id = $3)`
+	queryCountOccurrences        = `SELECT COUNT(*) FROM task_occurrences tocc JOIN task_schedules ts ON tocc.schedule_id = ts.id JOIN tasks t ON ts.task_id = t.id WHERE tocc.schedule_id = $1 AND t.user_id = $2 AND tocc.is_suppressed = false`
 )
 
 // occurrenceRepository defines the interface for occurrence data access.
@@ -130,17 +130,17 @@ type occurrenceRepository interface {
 	getOccurrencesByDateRange(ctx context.Context, userID string, startDate, endDate time.Time) ([]TaskOccurrence, error)
 	upsertOccurrence(ctx context.Context, taskID, scheduleID, userID string, date time.Time, scheduledTime *time.Time) (TaskOccurrence, error)
 	suppressOccurrence(ctx context.Context, id, userID string) error
-	countOccurrences(ctx context.Context, scheduleID string) (int, error)
+	countOccurrences(ctx context.Context, scheduleID, userID string) (int, error)
 
 	getAnswer(ctx context.Context, occurrenceID, userID string) (*TaskAnswer, error)
 	getAnswersByOccurrenceIDs(ctx context.Context, occurrenceIDs []string, userID string) (map[string]*TaskAnswer, error)
 	upsertAnswer(ctx context.Context, occurrenceID, userID string, answer AnswerRequest) (TaskAnswer, error)
 
-	getTask(ctx context.Context, taskID string) (task.Task, error)
+	getTask(ctx context.Context, taskID, userID string) (task.Task, error)
 	getActiveSchedulesByDate(ctx context.Context, userID string, date time.Time) ([]task.Schedule, error)
 	getActiveSchedulesForRange(ctx context.Context, userID string, startDate, endDate time.Time) ([]task.Schedule, error)
-	getSelectOptions(ctx context.Context, taskID string) ([]task.SelectOption, error)
-	selectOptionExists(ctx context.Context, optionID, taskID string) (bool, error)
+	getSelectOptions(ctx context.Context, taskID, userID string) ([]task.SelectOption, error)
+	selectOptionExists(ctx context.Context, optionID, taskID, userID string) (bool, error)
 
 	Close() error
 }
@@ -402,9 +402,9 @@ func (r *sqlOccurrenceRepository) suppressOccurrence(ctx context.Context, id, us
 	return nil
 }
 
-func (r *sqlOccurrenceRepository) countOccurrences(ctx context.Context, scheduleID string) (int, error) {
+func (r *sqlOccurrenceRepository) countOccurrences(ctx context.Context, scheduleID, userID string) (int, error) {
 	var count int
-	err := r.stmtCountOccurrences.QueryRowContext(ctx, scheduleID).Scan(&count)
+	err := r.stmtCountOccurrences.QueryRowContext(ctx, scheduleID, userID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("countOccurrences %s: %w", scheduleID, ErrDatabase)
 	}
@@ -453,9 +453,9 @@ func (r *sqlOccurrenceRepository) upsertAnswer(ctx context.Context, occurrenceID
 	return a, nil
 }
 
-func (r *sqlOccurrenceRepository) getTask(ctx context.Context, taskID string) (task.Task, error) {
+func (r *sqlOccurrenceRepository) getTask(ctx context.Context, taskID, userID string) (task.Task, error) {
 	var t task.Task
-	err := r.stmtGetTask.QueryRowContext(ctx, taskID).Scan(
+	err := r.stmtGetTask.QueryRowContext(ctx, taskID, userID).Scan(
 		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
 		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -517,8 +517,8 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesByDate(ctx context.Context, 
 	return schedules, nil
 }
 
-func (r *sqlOccurrenceRepository) getSelectOptions(ctx context.Context, taskID string) ([]task.SelectOption, error) {
-	rows, err := r.stmtGetSelectOptions.QueryContext(ctx, taskID)
+func (r *sqlOccurrenceRepository) getSelectOptions(ctx context.Context, taskID, userID string) ([]task.SelectOption, error) {
+	rows, err := r.stmtGetSelectOptions.QueryContext(ctx, taskID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("getSelectOptions: %w", ErrDatabase)
 	}
@@ -546,9 +546,9 @@ func (r *sqlOccurrenceRepository) getSelectOptions(ctx context.Context, taskID s
 	return options, nil
 }
 
-func (r *sqlOccurrenceRepository) selectOptionExists(ctx context.Context, optionID, taskID string) (bool, error) {
+func (r *sqlOccurrenceRepository) selectOptionExists(ctx context.Context, optionID, taskID, userID string) (bool, error) {
 	var exists bool
-	err := r.stmtCheckSelectOptionExists.QueryRowContext(ctx, optionID, taskID).Scan(&exists)
+	err := r.stmtCheckSelectOptionExists.QueryRowContext(ctx, optionID, taskID, userID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("selectOptionExists: %w", ErrDatabase)
 	}

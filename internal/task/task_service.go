@@ -52,7 +52,7 @@ func (s *defaultTaskService) getTask(ctx context.Context, id, userID string) (Wi
 	result := WithDetails{Task: task}
 
 	// Get schedule
-	schedule, err := s.repo.getScheduleByTaskID(ctx, id)
+	schedule, err := s.repo.getScheduleByTaskID(ctx, id, userID)
 	if err != nil {
 		return WithDetails{}, err
 	}
@@ -60,7 +60,7 @@ func (s *defaultTaskService) getTask(ctx context.Context, id, userID string) (Wi
 
 	// Get select options if answer_type is select
 	if task.AnswerType == AnswerTypeSelect {
-		options, err := s.repo.getSelectOptionsByTaskID(ctx, id)
+		options, err := s.repo.getSelectOptionsByTaskID(ctx, id, userID)
 		if err != nil {
 			return WithDetails{}, err
 		}

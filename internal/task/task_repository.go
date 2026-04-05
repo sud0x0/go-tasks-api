@@ -137,14 +137,14 @@ const (
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, task_id, recurrence_type, recurrence_interval, days_of_week, month_day, month_week, month_weekday,
 		month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n, created_at`
-	queryGetScheduleByTaskID = `SELECT id, task_id, recurrence_type, recurrence_interval, days_of_week, month_day,
-		month_week, month_weekday, month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n, created_at
-		FROM task_schedules WHERE task_id = $1`
+	queryGetScheduleByTaskID = `SELECT ts.id, ts.task_id, ts.recurrence_type, ts.recurrence_interval, ts.days_of_week, ts.month_day,
+		ts.month_week, ts.month_weekday, ts.month_of_year, ts.scheduled_times, ts.start_date, ts.end_type, ts.end_date, ts.end_after_n, ts.created_at
+		FROM task_schedules ts JOIN tasks t ON ts.task_id = t.id WHERE ts.task_id = $1 AND t.user_id = $2`
 
 	queryCreateSelectOption = `INSERT INTO task_select_options (task_id, value, position) VALUES ($1, $2, $3)
 		RETURNING id, task_id, value, position, created_at`
-	queryGetSelectOptionsByTaskID = `SELECT id, task_id, value, position, created_at
-		FROM task_select_options WHERE task_id = $1 ORDER BY position ASC`
+	queryGetSelectOptionsByTaskID = `SELECT tso.id, tso.task_id, tso.value, tso.position, tso.created_at
+		FROM task_select_options tso JOIN tasks t ON tso.task_id = t.id WHERE tso.task_id = $1 AND t.user_id = $2 ORDER BY tso.position ASC`
 )
 
 // taskRepository defines the interface for task data access.
@@ -159,10 +159,10 @@ type taskRepository interface {
 	categoryExists(ctx context.Context, categoryID, userID string) (bool, error)
 
 	createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error)
-	getScheduleByTaskID(ctx context.Context, taskID string) (*Schedule, error)
+	getScheduleByTaskID(ctx context.Context, taskID, userID string) (*Schedule, error)
 
 	createSelectOption(ctx context.Context, taskID, value string, position int) (SelectOption, error)
-	getSelectOptionsByTaskID(ctx context.Context, taskID string) ([]SelectOption, error)
+	getSelectOptionsByTaskID(ctx context.Context, taskID, userID string) ([]SelectOption, error)
 
 	Close() error
 }
@@ -485,11 +485,11 @@ func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedu
 	return &s, nil
 }
 
-func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID string) (*Schedule, error) {
+func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID, userID string) (*Schedule, error) {
 	var s Schedule
 	var daysOfWeekStr, scheduledTimesStr sql.NullString
 
-	err := r.stmtGetScheduleByTaskID.QueryRowContext(ctx, taskID).Scan(
+	err := r.stmtGetScheduleByTaskID.QueryRowContext(ctx, taskID, userID).Scan(
 		&s.ID, &s.TaskID, &s.RecurrenceType, &s.RecurrenceInterval,
 		&daysOfWeekStr, &s.MonthDay, &s.MonthWeek, &s.MonthWeekday,
 		&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
@@ -535,8 +535,8 @@ func (r *sqlTaskRepository) createSelectOption(ctx context.Context, taskID, valu
 	return opt, nil
 }
 
-func (r *sqlTaskRepository) getSelectOptionsByTaskID(ctx context.Context, taskID string) ([]SelectOption, error) {
-	rows, err := r.stmtGetSelectOptionsByTaskID.QueryContext(ctx, taskID)
+func (r *sqlTaskRepository) getSelectOptionsByTaskID(ctx context.Context, taskID, userID string) ([]SelectOption, error) {
+	rows, err := r.stmtGetSelectOptionsByTaskID.QueryContext(ctx, taskID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("getSelectOptionsByTaskID: %w", ErrDatabase)
 	}

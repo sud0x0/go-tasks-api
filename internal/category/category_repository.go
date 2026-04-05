@@ -21,7 +21,7 @@ const (
 	queryCreateCategory  = `INSERT INTO categories (user_id, name, description) VALUES ($1, $2, $3) RETURNING id, user_id, name, description, created_at, updated_at`
 	queryUpdateCategory  = `UPDATE categories SET name = $1, description = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4 RETURNING id, user_id, name, description, created_at, updated_at`
 	queryDeleteCategory  = `DELETE FROM categories WHERE id = $1 AND user_id = $2`
-	queryCheckTasksExist = `SELECT EXISTS(SELECT 1 FROM tasks WHERE category_id = $1 AND is_active = true)`
+	queryCheckTasksExist = `SELECT EXISTS(SELECT 1 FROM tasks WHERE category_id = $1 AND user_id = $2 AND is_active = true)`
 )
 
 // categoryRepository defines the interface for category data access.
@@ -31,7 +31,7 @@ type categoryRepository interface {
 	createCategory(ctx context.Context, userID, name string, description *string) (Category, error)
 	updateCategory(ctx context.Context, id, userID, name string, description *string) (Category, error)
 	deleteCategory(ctx context.Context, id, userID string) error
-	hasActiveTasks(ctx context.Context, categoryID string) (bool, error)
+	hasActiveTasks(ctx context.Context, categoryID, userID string) (bool, error)
 	Close() error
 }
 
@@ -238,9 +238,9 @@ func (r *sqlCategoryRepository) deleteCategory(ctx context.Context, id, userID s
 	return nil
 }
 
-func (r *sqlCategoryRepository) hasActiveTasks(ctx context.Context, categoryID string) (bool, error) {
+func (r *sqlCategoryRepository) hasActiveTasks(ctx context.Context, categoryID, userID string) (bool, error) {
 	var exists bool
-	err := r.stmtCheckTasksExist.QueryRowContext(ctx, categoryID).Scan(&exists)
+	err := r.stmtCheckTasksExist.QueryRowContext(ctx, categoryID, userID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("hasActiveTasks %s: %w", categoryID, ErrDatabase)
 	}

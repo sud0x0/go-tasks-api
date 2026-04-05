@@ -279,7 +279,7 @@ func TestCategoryHandler(t *testing.T) {
 
 		// Check for active tasks
 		mock.ExpectQuery(`SELECT EXISTS.+`).
-			WithArgs(testCategoryID).
+			WithArgs(testCategoryID, testUserID).
 			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
 		mock.ExpectExec(`DELETE FROM categories WHERE id = \$1 AND user_id = \$2`).
@@ -461,7 +461,7 @@ func TestCategoryHandler(t *testing.T) {
 
 		// Check for active tasks - returns true (has active tasks)
 		mock.ExpectQuery(`SELECT EXISTS.+`).
-			WithArgs(testCategoryID).
+			WithArgs(testCategoryID, testUserID).
 			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 
 		urlParams := map[string]string{"id": testCategoryID}

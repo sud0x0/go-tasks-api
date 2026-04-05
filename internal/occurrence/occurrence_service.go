@@ -50,7 +50,7 @@ func (s *defaultOccurrenceService) getOccurrencesByDate(ctx context.Context, use
 			// Fetch count once before the time slot loop
 			remainingSlots := -1 // -1 means unlimited
 			if sched.EndType == task.EndTypeAfterN && sched.EndAfterN != nil {
-				count, err := s.repo.countOccurrences(ctx, sched.ID)
+				count, err := s.repo.countOccurrences(ctx, sched.ID, userID)
 				if err != nil {
 					return nil, err
 				}
@@ -129,7 +129,7 @@ func (s *defaultOccurrenceService) getOccurrencesByDateRange(ctx context.Context
 				// Fetch count once before the time slot loop
 				remainingSlots := -1 // -1 means unlimited
 				if sched.EndType == task.EndTypeAfterN && sched.EndAfterN != nil {
-					count, err := s.repo.countOccurrences(ctx, sched.ID)
+					count, err := s.repo.countOccurrences(ctx, sched.ID, userID)
 					if err != nil {
 						return nil, err
 					}
@@ -218,7 +218,7 @@ func (s *defaultOccurrenceService) submitAnswer(ctx context.Context, id, userID 
 	}
 
 	// Get the task to verify answer type
-	t, err := s.repo.getTask(ctx, occ.TaskID)
+	t, err := s.repo.getTask(ctx, occ.TaskID, userID)
 	if err != nil {
 		return TaskAnswer{}, err
 	}
@@ -253,7 +253,7 @@ func (s *defaultOccurrenceService) validateAnswer(ctx context.Context, t task.Ta
 			return ErrInvalidInput
 		}
 		// Verify the select option belongs to this task
-		exists, err := s.repo.selectOptionExists(ctx, *req.AnswerSelect, t.ID)
+		exists, err := s.repo.selectOptionExists(ctx, *req.AnswerSelect, t.ID, t.UserID)
 		if err != nil {
 			return err
 		}
@@ -293,7 +293,7 @@ func (s *defaultOccurrenceService) enrichOccurrences(ctx context.Context, occurr
 		t, ok := taskCache[occ.TaskID]
 		if !ok {
 			var err error
-			t, err = s.repo.getTask(ctx, occ.TaskID)
+			t, err = s.repo.getTask(ctx, occ.TaskID, occ.UserID)
 			if err != nil {
 				return nil, err
 			}
@@ -306,7 +306,7 @@ func (s *defaultOccurrenceService) enrichOccurrences(ctx context.Context, occurr
 			opts, ok := optionsCache[occ.TaskID]
 			if !ok {
 				var err error
-				opts, err = s.repo.getSelectOptions(ctx, occ.TaskID)
+				opts, err = s.repo.getSelectOptions(ctx, occ.TaskID, occ.UserID)
 				if err != nil {
 					return nil, err
 				}

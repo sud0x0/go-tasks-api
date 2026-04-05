@@ -103,6 +103,7 @@ func (h *Handler) GetCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	id := h.sanitise(chi.URLParam(r, "id"))
 	if id == "" {
 		h.handleError(ctx, w, ErrMissingParameters)
@@ -131,6 +132,7 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	limitStr := h.sanitise(r.URL.Query().Get("limit"))
 	offsetStr := h.sanitise(r.URL.Query().Get("offset"))
 
@@ -191,6 +193,7 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	id := h.sanitise(chi.URLParam(r, "id"))
 	if id == "" {
 		h.handleError(ctx, w, ErrMissingParameters)
@@ -234,6 +237,7 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	id := h.sanitise(chi.URLParam(r, "id"))
 	if id == "" {
 		h.handleError(ctx, w, ErrMissingParameters)

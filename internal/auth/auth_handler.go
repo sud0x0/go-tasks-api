@@ -192,7 +192,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitise refresh token
+	// Sanitise all fields before validation
 	req.RefreshToken = h.sanitise(req.RefreshToken)
 
 	if err := h.validate.Struct(req); err != nil {
@@ -222,7 +222,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitise refresh token
+	// Sanitise all fields before validation
 	req.RefreshToken = h.sanitise(req.RefreshToken)
 
 	if err := h.validate.Struct(req); err != nil {

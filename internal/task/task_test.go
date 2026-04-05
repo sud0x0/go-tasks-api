@@ -47,9 +47,9 @@ func setupTestStack(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	mock.ExpectPrepare("UPDATE tasks SET is_active =")
 	mock.ExpectPrepare("SELECT EXISTS")
 	mock.ExpectPrepare("INSERT INTO task_schedules")
-	mock.ExpectPrepare("SELECT id, task_id, recurrence_type")
+	mock.ExpectPrepare("SELECT ts.id, ts.task_id, ts.recurrence_type")
 	mock.ExpectPrepare("INSERT INTO task_select_options")
-	mock.ExpectPrepare("SELECT id, task_id, value")
+	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")
 
 	repo := NewTaskRepository(db, logger)
 	service := NewTaskService(repo, logger)
@@ -124,8 +124,8 @@ func TestTaskHandler(t *testing.T) {
 				testTaskID, testUserID, testCategoryID, "Morning Workout", &description, "boolean", true, now, now,
 			))
 
-		mock.ExpectQuery(`SELECT .+ FROM task_schedules WHERE task_id = \$1`).
-			WithArgs(testTaskID).
+		mock.ExpectQuery(`SELECT ts\.id, ts\.task_id`).
+			WithArgs(testTaskID, testUserID).
 			WillReturnRows(mockScheduleRows().AddRow(
 				testScheduleID, testTaskID, "daily", nil, "{}",
 				nil, nil, nil, nil, "{}",

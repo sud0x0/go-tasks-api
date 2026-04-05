@@ -114,6 +114,7 @@ func (h *Handler) ListOccurrences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	dateStr := h.sanitise(r.URL.Query().Get("date"))
 	startDateStr := h.sanitise(r.URL.Query().Get("start_date"))
 	endDateStr := h.sanitise(r.URL.Query().Get("end_date"))
@@ -165,6 +166,7 @@ func (h *Handler) SuppressOccurrence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	id := h.sanitise(chi.URLParam(r, "id"))
 	if id == "" {
 		h.handleError(ctx, w, ErrMissingParameters)
@@ -192,6 +194,7 @@ func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitise all fields before validation
 	id := h.sanitise(chi.URLParam(r, "id"))
 	if id == "" {
 		h.handleError(ctx, w, ErrMissingParameters)
@@ -208,7 +211,7 @@ func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitise string fields
+	// Sanitise all fields before validation
 	req.AnswerString = h.sanitisePtr(req.AnswerString)
 	req.AnswerSelect = h.sanitisePtr(req.AnswerSelect)
 

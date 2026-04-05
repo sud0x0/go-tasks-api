@@ -93,7 +93,7 @@ func (s *defaultCategoryService) deleteCategory(ctx context.Context, id, userID 
 	}
 
 	// Only then check active tasks
-	hasActiveTasks, err := s.repo.hasActiveTasks(ctx, id)
+	hasActiveTasks, err := s.repo.hasActiveTasks(ctx, id, userID)
 	if err != nil {
 		return err
 	}

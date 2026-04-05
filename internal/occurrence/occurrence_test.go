@@ -51,7 +51,7 @@ func setupTestStack(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	mock.ExpectPrepare("INSERT INTO task_answers")
 	mock.ExpectPrepare("SELECT id, user_id, category_id, name")
 	mock.ExpectPrepare("SELECT ts.id, ts.task_id")
-	mock.ExpectPrepare("SELECT id, task_id, value")
+	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")
 	mock.ExpectPrepare("SELECT EXISTS")
 
 	repo := NewOccurrenceRepository(db, logger)
@@ -257,8 +257,8 @@ func TestOccurrenceHandler(t *testing.T) {
 			))
 
 		// Get the task to verify answer type
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE id = \$1`).
-			WithArgs(testTaskID).
+		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE id = \$1 AND user_id = \$2`).
+			WithArgs(testTaskID, testUserID).
 			WillReturnRows(mockTaskRows().AddRow(
 				testTaskID, testUserID, testCategoryID, "Morning Workout", nil, task.AnswerTypeBoolean, true, now, now,
 			))

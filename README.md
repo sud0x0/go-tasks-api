@@ -16,6 +16,7 @@ A task and habit management REST API built with Go. Users register, create recur
 - [Security](#security)
 - [Code Quality](#code-quality)
 - [Make Commands](#make-commands)
+- [TODO](#TODO)
 
 ---
 
@@ -347,4 +348,5 @@ Typical workflow
 - Add email based MFA
 - User account update (name, theme, accent colour)
 - User delete
+- Front end based e2e encryption toggle for user data
 - Test script to work with MFA

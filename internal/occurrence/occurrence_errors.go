@@ -58,4 +58,10 @@ var (
 
 	// ErrOccurrenceIsSuppressed indicates the occurrence is suppressed (for rejecting answers).
 	ErrOccurrenceIsSuppressed = errors.New("cannot answer a suppressed occurrence")
+
+	// ErrEmptyIDList indicates no IDs were provided for bulk operations.
+	ErrEmptyIDList = errors.New("empty ID list")
+
+	// ErrTooManyIDs indicates too many IDs were provided for bulk operations.
+	ErrTooManyIDs = errors.New("too many IDs (max 100)")
 )

@@ -190,6 +190,7 @@ func main() {
 
 		// Occurrence routes.
 		r.Get("/occurrences", occurrenceHandler.ListOccurrences)
+		r.Post("/occurrences/bulk-delete-answers", occurrenceHandler.BulkDeleteAnswers)
 		r.Post("/occurrences/{id}/suppress", occurrenceHandler.SuppressOccurrence)
 		r.Post("/occurrences/{id}/unsuppress", occurrenceHandler.UnsuppressOccurrence)
 		r.Post("/occurrences/{id}/answer", occurrenceHandler.SubmitAnswer)

@@ -14,6 +14,9 @@ const (
 	maxAnswerStringLength = 500
 )
 
+// Bulk operation limits.
+const maxBulkIDs = 100
+
 // occurrenceService defines the interface for occurrence business logic.
 type occurrenceService interface {
 	getOccurrencesByDate(ctx context.Context, userID string, date time.Time) ([]WithDetails, error)
@@ -21,6 +24,7 @@ type occurrenceService interface {
 	suppressOccurrence(ctx context.Context, id, userID string) error
 	unsuppressOccurrence(ctx context.Context, id, userID string) error
 	submitAnswer(ctx context.Context, id, userID string, req AnswerRequest) (TaskAnswer, error)
+	bulkDeleteAnswers(ctx context.Context, userID string, occurrenceIDs []string) (int, int, error)
 }
 
 // defaultOccurrenceService implements occurrenceService.
@@ -440,4 +444,43 @@ func (s *defaultOccurrenceService) scheduleMatchesDate(sched task.Schedule, date
 	}
 
 	return false
+}
+
+func (s *defaultOccurrenceService) bulkDeleteAnswers(ctx context.Context, userID string, occurrenceIDs []string) (int, int, error) {
+	requested := len(occurrenceIDs)
+
+	if userID == "" {
+		return 0, 0, ErrMissingParameters
+	}
+	if requested == 0 {
+		return 0, 0, ErrEmptyIDList
+	}
+	if requested > maxBulkIDs {
+		return 0, 0, ErrTooManyIDs
+	}
+
+	// Validate and deduplicate UUIDs
+	seen := make(map[string]struct{}, requested)
+	validIDs := make([]string, 0, requested)
+	for _, id := range occurrenceIDs {
+		if !shared.IsValidUUID(id) {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		validIDs = append(validIDs, id)
+	}
+
+	if len(validIDs) == 0 {
+		return requested, 0, nil
+	}
+
+	deleted, err := s.repo.bulkDeleteAnswers(ctx, userID, validIDs)
+	if err != nil {
+		return requested, 0, err
+	}
+
+	return requested, deleted, nil
 }

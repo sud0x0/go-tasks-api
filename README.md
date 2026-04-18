@@ -228,6 +228,7 @@ All `/api/v1/*` endpoints (except auth) require a valid JWT access token in the 
 | POST | `/api/v1/occurrences/{id}/answer` | Submit or update an answer |
 | POST | `/api/v1/occurrences/{id}/suppress` | Mark occurrence as skipped for this day |
 | POST | `/api/v1/occurrences/{id}/unsuppress` | Remove the skipped/suppressed flag |
+| POST | `/api/v1/occurrences/bulk-delete-answers` | Bulk delete answers by occurrence IDs (max 100) |
 
 **Suppression behavior:**
 - Suppressed occurrences reject answers with `409 Conflict` — unsuppress first to submit an answer.

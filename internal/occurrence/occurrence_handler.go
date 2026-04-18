@@ -88,6 +88,10 @@ func (h *Handler) handleError(ctx context.Context, w http.ResponseWriter, err er
 		shared.WriteErrorJSON(w, "occurrence is not suppressed", http.StatusConflict)
 	case errors.Is(err, ErrOccurrenceIsSuppressed):
 		shared.WriteErrorJSON(w, "cannot answer a suppressed occurrence", http.StatusConflict)
+	case errors.Is(err, ErrEmptyIDList):
+		shared.WriteErrorJSON(w, "no occurrence IDs provided", http.StatusBadRequest)
+	case errors.Is(err, ErrTooManyIDs):
+		shared.WriteErrorJSON(w, "too many IDs (max 100)", http.StatusBadRequest)
 	case errors.Is(err, ErrValidation):
 		shared.WriteErrorJSON(w, "validation error", http.StatusBadRequest)
 	case errors.Is(err, ErrInvalidReqBody):
@@ -265,4 +269,46 @@ func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.responseJSON(ctx, w, answer, http.StatusOK)
+}
+
+// BulkDeleteAnswers handles POST /occurrences/bulk-delete-answers.
+func (h *Handler) BulkDeleteAnswers(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID := auth.GetUserID(ctx)
+	if userID == "" {
+		h.handleError(ctx, w, ErrUnauthorised)
+		return
+	}
+
+	var req BulkDeleteAnswersRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.handleError(ctx, w, ErrInvalidReqBody)
+		return
+	}
+
+	// Sanitise all IDs before validation
+	for i, id := range req.OccurrenceIDs {
+		req.OccurrenceIDs[i] = h.sanitise(id)
+	}
+
+	if err := h.validate.Struct(req); err != nil {
+		h.handleError(ctx, w, ErrValidation)
+		return
+	}
+
+	// Validate each ID is a valid UUID
+	for _, id := range req.OccurrenceIDs {
+		if !shared.IsValidUUID(id) {
+			shared.WriteErrorJSON(w, "invalid id: all IDs must be valid UUIDs", http.StatusBadRequest)
+			return
+		}
+	}
+
+	requested, deleted, err := h.service.bulkDeleteAnswers(ctx, userID, req.OccurrenceIDs)
+	if err != nil {
+		h.handleError(ctx, w, err)
+		return
+	}
+
+	h.responseJSON(ctx, w, BulkDeleteAnswersResponse{Requested: requested, Deleted: deleted}, http.StatusOK)
 }

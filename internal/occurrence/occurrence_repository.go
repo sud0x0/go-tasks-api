@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go-tasks-api/internal/task"
+
+	"github.com/lib/pq"
 )
 
 // Repository size limits (defence-in-depth validation).
@@ -150,6 +152,7 @@ type occurrenceRepository interface {
 	getAnswer(ctx context.Context, occurrenceID, userID string) (*TaskAnswer, error)
 	getAnswersByOccurrenceIDs(ctx context.Context, occurrenceIDs []string, userID string) (map[string]*TaskAnswer, error)
 	upsertAnswer(ctx context.Context, occurrenceID, userID string, answer AnswerRequest) (TaskAnswer, error)
+	bulkDeleteAnswers(ctx context.Context, userID string, occurrenceIDs []string) (int, error)
 
 	getTask(ctx context.Context, taskID, userID string) (task.Task, error)
 	getActiveSchedulesByDate(ctx context.Context, userID string, date time.Time) ([]task.Schedule, error)
@@ -680,4 +683,23 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesForRange(ctx context.Context
 		return []task.Schedule{}, nil
 	}
 	return schedules, nil
+}
+
+func (r *sqlOccurrenceRepository) bulkDeleteAnswers(ctx context.Context, userID string, occurrenceIDs []string) (int, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return 0, nil
+	}
+
+	query := `DELETE FROM task_answers WHERE user_id = $1 AND occurrence_id = ANY($2::uuid[])`
+	result, err := r.db.ExecContext(ctx, query, userID, pq.StringArray(occurrenceIDs))
+	if err != nil {
+		return 0, fmt.Errorf("bulkDeleteAnswers: %w", ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("bulkDeleteAnswers rowsAffected: %w", ErrDatabase)
+	}
+
+	return int(rowsAffected), nil
 }

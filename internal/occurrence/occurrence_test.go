@@ -465,4 +465,139 @@ func TestOccurrenceHandler(t *testing.T) {
 			fmt.Println("PASS: Rejected invalid date range")
 		}
 	})
+
+	// TEST 11: BULK DELETE ANSWERS - SUCCESS
+	t.Run("Bulk Delete Answers - Success", func(t *testing.T) {
+		handler, mock, cleanup := setupTestStack(t)
+		defer cleanup()
+
+		fmt.Println("Running Test: Bulk Delete Answers - Success")
+
+		occID1 := "11111111-1111-1111-1111-111111111111"
+		occID2 := "22222222-2222-2222-2222-222222222222"
+
+		// Use regexp matcher with AnyArg since sqlmock doesn't handle Go slice to Postgres array conversion
+		mock.ExpectExec(`DELETE FROM task_answers`).
+			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 2))
+
+		reqBody, _ := json.Marshal(BulkDeleteAnswersRequest{OccurrenceIDs: []string{occID1, occID2}})
+		req := createRequest(http.MethodPost, "/api/v1/occurrences/bulk-delete-answers", reqBody, nil, nil)
+		rr := httptest.NewRecorder()
+
+		handler.BulkDeleteAnswers(rr, req)
+
+		if status := rr.Code; status != http.StatusOK {
+			t.Errorf("FAIL: Handler returned wrong status code: got %v want %v. Body: %s", status, http.StatusOK, rr.Body.String())
+		} else {
+			fmt.Println("PASS: Status code check")
+		}
+
+		var response BulkDeleteAnswersResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("FAIL: Failed to unmarshal response: %v", err)
+		}
+
+		if response.Requested != 2 {
+			t.Errorf("FAIL: Expected requested=2, got %d", response.Requested)
+		} else {
+			fmt.Println("PASS: Requested count matches")
+		}
+
+		if response.Deleted != 2 {
+			t.Errorf("FAIL: Expected deleted=2, got %d", response.Deleted)
+		} else {
+			fmt.Println("PASS: Deleted count matches")
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("Unfulfilled expectations: %s", err)
+		}
+	})
+
+	// TEST 12: BULK DELETE ANSWERS - EMPTY ID LIST
+	t.Run("Bulk Delete Answers - Empty ID List", func(t *testing.T) {
+		handler, _, cleanup := setupTestStack(t)
+		defer cleanup()
+
+		fmt.Println("Running Test: Bulk Delete Answers - Empty ID List")
+
+		reqBody, _ := json.Marshal(BulkDeleteAnswersRequest{OccurrenceIDs: []string{}})
+		req := createRequest(http.MethodPost, "/api/v1/occurrences/bulk-delete-answers", reqBody, nil, nil)
+		rr := httptest.NewRecorder()
+
+		handler.BulkDeleteAnswers(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("Expected BadRequest for empty ID list, got %v", rr.Code)
+		} else {
+			fmt.Println("PASS: Rejected empty ID list")
+		}
+	})
+
+	// TEST 13: BULK DELETE ANSWERS - INVALID UUID
+	t.Run("Bulk Delete Answers - Invalid UUID", func(t *testing.T) {
+		handler, _, cleanup := setupTestStack(t)
+		defer cleanup()
+
+		fmt.Println("Running Test: Bulk Delete Answers - Invalid UUID")
+
+		reqBody, _ := json.Marshal(BulkDeleteAnswersRequest{OccurrenceIDs: []string{"not-a-uuid", "also-invalid"}})
+		req := createRequest(http.MethodPost, "/api/v1/occurrences/bulk-delete-answers", reqBody, nil, nil)
+		rr := httptest.NewRecorder()
+
+		handler.BulkDeleteAnswers(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("Expected BadRequest for invalid UUIDs, got %v. Body: %s", rr.Code, rr.Body.String())
+		} else {
+			fmt.Println("PASS: Rejected invalid UUIDs")
+		}
+	})
+
+	// TEST 14: BULK DELETE ANSWERS - NO ANSWERS FOUND
+	t.Run("Bulk Delete Answers - No Answers Found", func(t *testing.T) {
+		handler, mock, cleanup := setupTestStack(t)
+		defer cleanup()
+
+		fmt.Println("Running Test: Bulk Delete Answers - No Answers Found")
+
+		occID1 := "11111111-1111-1111-1111-111111111111"
+
+		// Use regexp matcher with AnyArg since sqlmock doesn't handle Go slice to Postgres array conversion
+		mock.ExpectExec(`DELETE FROM task_answers`).
+			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+
+		reqBody, _ := json.Marshal(BulkDeleteAnswersRequest{OccurrenceIDs: []string{occID1}})
+		req := createRequest(http.MethodPost, "/api/v1/occurrences/bulk-delete-answers", reqBody, nil, nil)
+		rr := httptest.NewRecorder()
+
+		handler.BulkDeleteAnswers(rr, req)
+
+		if status := rr.Code; status != http.StatusOK {
+			t.Errorf("FAIL: Handler returned wrong status code: got %v want %v. Body: %s", status, http.StatusOK, rr.Body.String())
+		} else {
+			fmt.Println("PASS: Status code check")
+		}
+
+		var response BulkDeleteAnswersResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("FAIL: Failed to unmarshal response: %v", err)
+		}
+
+		if response.Requested != 1 {
+			t.Errorf("FAIL: Expected requested=1, got %d", response.Requested)
+		}
+
+		if response.Deleted != 0 {
+			t.Errorf("FAIL: Expected deleted=0, got %d", response.Deleted)
+		} else {
+			fmt.Println("PASS: Correctly reports 0 deleted")
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("Unfulfilled expectations: %s", err)
+		}
+	})
 }

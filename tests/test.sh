@@ -937,6 +937,63 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+subsection "Bulk delete answers"
+# First create some answers to delete
+post_auth "/api/v1/occurrences/$BOOLEAN_OCCURRENCE_ID/answer" '{"answer_boolean":true}'
+post_auth "/api/v1/occurrences/$TIMED_OCC_ID/answer" '{"answer_integer":99}'
+BULK_ANS_OCC_1="$BOOLEAN_OCCURRENCE_ID"
+BULK_ANS_OCC_2="$TIMED_OCC_ID"
+
+# Bulk delete the answers
+post_auth "/api/v1/occurrences/bulk-delete-answers" "{\"occurrence_ids\":[\"$BULK_ANS_OCC_1\",\"$BULK_ANS_OCC_2\"]}"
+check "POST /occurrences/bulk-delete-answers returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
+check_body "bulk delete answers requested is 2" '.requested == 2' "$LAST_BODY"
+check_body "bulk delete answers deleted is 2" '.deleted == 2' "$LAST_BODY"
+
+# Verify answers are deleted by re-fetching occurrences
+get "/api/v1/occurrences?date=$TODAY"
+BOOL_ANS=$(echo "$LAST_BODY" | jq '[.[] | select(.occurrence.id == "'"$BULK_ANS_OCC_1"'")] | .[0].answer')
+TIMED_ANS=$(echo "$LAST_BODY" | jq '[.[] | select(.occurrence.id == "'"$BULK_ANS_OCC_2"'")] | .[0].answer')
+if [ "$BOOL_ANS" = "null" ] && [ "$TIMED_ANS" = "null" ]; then
+    echo -e "  ${GREEN}PASS${NC} [bulk-delete-answers] Answers are null after bulk delete"
+    PASS=$((PASS + 1))
+else
+    echo -e "  ${RED}FAIL${NC} [bulk-delete-answers] Answers still exist after bulk delete"
+    FAIL=$((FAIL + 1))
+fi
+
+# Bulk delete with empty list returns 400
+post_auth "/api/v1/occurrences/bulk-delete-answers" '{"occurrence_ids":[]}'
+check "POST /occurrences/bulk-delete-answers empty list returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
+
+# Bulk delete with invalid UUID returns 400
+post_auth "/api/v1/occurrences/bulk-delete-answers" '{"occurrence_ids":["not-a-uuid"]}'
+check "POST /occurrences/bulk-delete-answers invalid UUID returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
+
+# Bulk delete with 101 IDs returns 400
+TOO_MANY_OCCURRENCE_IDS='{"occurrence_ids":['
+for i in $(seq 1 101); do
+    if [ $i -gt 1 ]; then
+        TOO_MANY_OCCURRENCE_IDS+=","
+    fi
+    TOO_MANY_OCCURRENCE_IDS+="\"$(printf '%08d-0000-0000-0000-%012d' $i $i)\""
+done
+TOO_MANY_OCCURRENCE_IDS+=']}'
+post_auth "/api/v1/occurrences/bulk-delete-answers" "$TOO_MANY_OCCURRENCE_IDS"
+check "POST /occurrences/bulk-delete-answers 101 IDs returns 400" 400 "$LAST_STATUS" "$LAST_BODY"
+
+# Bulk delete with duplicate IDs (deduplication test)
+post_auth "/api/v1/occurrences/$BOOLEAN_OCCURRENCE_ID/answer" '{"answer_boolean":false}'
+post_auth "/api/v1/occurrences/bulk-delete-answers" "{\"occurrence_ids\":[\"$BOOLEAN_OCCURRENCE_ID\",\"$BOOLEAN_OCCURRENCE_ID\",\"$BOOLEAN_OCCURRENCE_ID\"]}"
+check "POST /occurrences/bulk-delete-answers duplicates returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
+check_body "bulk delete answers requested is 3 (raw input count)" '.requested == 3' "$LAST_BODY"
+check_body "bulk delete answers deleted is 1 (deduplicated)" '.deleted == 1' "$LAST_BODY"
+
+# Bulk delete non-existent occurrence IDs returns 200 with deleted=0
+post_auth "/api/v1/occurrences/bulk-delete-answers" '{"occurrence_ids":["00000000-0000-0000-0000-000000000000"]}'
+check "POST /occurrences/bulk-delete-answers non-existent returns 200" 200 "$LAST_STATUS" "$LAST_BODY"
+check_body "bulk delete answers non-existent deleted is 0" '.deleted == 0' "$LAST_BODY"
+
 # =============================================================================
 section "8. Daily Logs"
 # =============================================================================

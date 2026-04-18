@@ -93,3 +93,14 @@ type AnswerRequest struct {
 	AnswerBoolean *bool   `json:"answer_boolean"`
 	AnswerSelect  *string `json:"answer_select"`
 }
+
+// BulkDeleteAnswersRequest is used for bulk deleting answers.
+type BulkDeleteAnswersRequest struct {
+	OccurrenceIDs []string `json:"occurrence_ids" validate:"required,min=1,max=100,dive,required"`
+}
+
+// BulkDeleteAnswersResponse is the response for bulk delete answer operations.
+type BulkDeleteAnswersResponse struct {
+	Requested int `json:"requested"`
+	Deleted   int `json:"deleted"`
+}

@@ -770,6 +770,31 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/occurrences/bulk-delete-answers:
+    post:
+      tags:
+        - Occurrence
+      summary: Bulk delete answers
+      description: Delete answers for multiple occurrences. Maximum 100 IDs per request.
+      operationId: bulkDeleteAnswers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkDeleteAnswersRequest"
+      responses:
+        "200":
+          description: Bulk delete completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkDeleteAnswersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # Daily log endpoints
   /api/v1/daily-logs:
     get:
@@ -1451,6 +1476,30 @@ components:
         answer_select:
           type: string
           format: uuid
+
+    BulkDeleteAnswersRequest:
+      type: object
+      required:
+        - occurrence_ids
+      properties:
+        occurrence_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+          maxItems: 100
+          description: List of occurrence IDs whose answers should be deleted
+
+    BulkDeleteAnswersResponse:
+      type: object
+      properties:
+        requested:
+          type: integer
+          description: Number of IDs in the request (raw input count)
+        deleted:
+          type: integer
+          description: Number of answers actually deleted
 
     # Daily log schemas
     DailyLog:

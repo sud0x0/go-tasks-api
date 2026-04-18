@@ -46,4 +46,19 @@ var (
 
 	// ErrEntryTooLong indicates the entry exceeds the maximum length.
 	ErrEntryTooLong = errors.New("entry exceeds maximum of 10000 characters")
+
+	// ErrTooManyIDs indicates too many IDs were provided in a bulk operation.
+	ErrTooManyIDs = errors.New("too many ids: maximum 100 per request")
+
+	// ErrEmptyIDList indicates the IDs list must not be empty.
+	ErrEmptyIDList = errors.New("ids list must not be empty")
+
+	// ErrDailyLogAlreadyActive indicates the daily log is already active.
+	ErrDailyLogAlreadyActive = errors.New("daily log is already active")
+
+	// ErrDailyLogAlreadyInactive indicates the daily log is already inactive.
+	ErrDailyLogAlreadyInactive = errors.New("daily log is already inactive")
+
+	// ErrCannotPermanentDeleteActiveDailyLog indicates an attempt to permanently delete an active daily log.
+	ErrCannotPermanentDeleteActiveDailyLog = errors.New("cannot permanently delete an active daily log; deactivate it first")
 )

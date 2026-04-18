@@ -50,15 +50,24 @@ var (
 	// ErrUsernameTooLong indicates the username exceeds the maximum length.
 	ErrUsernameTooLong = errors.New("username exceeds maximum of 50 characters")
 
-	// ErrPasswordTooLong indicates the password exceeds the maximum length.
-	ErrPasswordTooLong = errors.New("password exceeds maximum of 72 characters")
+	// ErrPasswordTooLong indicates the password exceeds the maximum length (128 code points after NFKC).
+	ErrPasswordTooLong = errors.New("password exceeds maximum of 128 characters")
 
-	// ErrPasswordTooShort indicates the password is too short.
+	// ErrPasswordTooShort indicates the password is too short (minimum 8 code points after NFKC).
 	ErrPasswordTooShort = errors.New("password must be at least 8 characters")
+
+	// ErrPasswordInvalidChars indicates the password contains invalid control characters.
+	ErrPasswordInvalidChars = errors.New("password contains invalid control characters")
 
 	// ErrInvalidUsername indicates the username is invalid (e.g., empty or whitespace-only).
 	ErrInvalidUsername = errors.New("username cannot be empty or whitespace")
 
 	// ErrValkey indicates a Valkey operation failure.
 	ErrValkey = errors.New("valkey error")
+
+	// ErrTokenOwnershipMismatch indicates the token does not belong to the claimed user.
+	ErrTokenOwnershipMismatch = errors.New("token ownership mismatch")
+
+	// ErrValkeyUnavailable indicates the Valkey service is unavailable.
+	ErrValkeyUnavailable = errors.New("valkey service unavailable")
 )

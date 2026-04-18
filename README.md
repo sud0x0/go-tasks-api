@@ -7,6 +7,7 @@ A task and habit management REST API built with Go. Users register, create recur
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
+- [Version](#version)
 - [Configuration](#configuration)
 - [API Overview](#api-overview)
 - [Authentication](#authentication)
@@ -22,21 +23,22 @@ A task and habit management REST API built with Go. Users register, create recur
 
 ## Architecture
 
-The project follows Domain-Driven Design with a layered structure. Each domain (auth, category, task, occurrence, dailylog, log) owns its handler, service, repository, model, and errors. No domain imports another domain's repository directly.
+The project follows Domain-Driven Design with a layered structure. Each domain (auth, category, task, occurrence, dailylog) owns its handler, service, repository, model, and errors. No domain imports another domain's repository directly.
 
 ```
 cmd/api/main.go               — wiring, middleware, graceful shutdown
 internal/
   auth/                       — registration, login, JWT, refresh tokens, blocklist
-  category/                   — task categories (CRUD)
-  task/                       — tasks with schedules and select options (CRUD)
+  category/                   — task categories (CRUD with soft/hard delete)
+  task/                       — tasks with schedules and select options (CRUD with soft/hard delete)
   occurrence/                 — on-demand occurrence generation and answers
-  dailylog/                   — one journal entry per user per day
+  dailylog/                   — one journal entry per user per day (with soft/hard delete)
   config/                     — environment variable loading
   db/                         — database connection and health check
   metrics/                    — Prometheus instrumentation
   middleware/                 — CORS, security headers, request logger
-  shared/                     — validation helpers, pagination, sanitisation
+  shared/                     — validation helpers, pagination, sanitisation, logger
+  version/                    — version info for --version flag
 migrations/                   — Goose SQL migrations
 ```
 
@@ -93,6 +95,22 @@ make build    # rebuild from scratch
 
 ---
 
+## Version
+
+Invoke `./bin/api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture. Build the binary with `make build-binary` to embed the current commit and timestamp via `-ldflags`. Without these, the build-time fields fall back to `dev` / `unknown`.
+
+Example:
+
+```
+go-tasks-api version 0.1.0
+  Git commit: 49cddbf
+  Build date: 2026-04-11T04:06:54Z
+  Go version: go1.26.2
+  OS/Arch:    darwin/arm64
+```
+
+---
+
 ## Configuration
 
 All configuration is read from environment variables. Copy `.env.example` to `.env` and fill in values before running.
@@ -126,26 +144,51 @@ RSA keys are generated automatically on first startup if not present. In product
 
 Base URL: `http://localhost:8080`
 
-All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header except the auth endpoints listed below.
+All `/api/v1/*` endpoints (except auth) require a valid JWT access token in the `Authorization: Bearer <token>` header.
 
 ### Auth
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/v1/auth/register` | No | Register a new user |
-| POST | `/api/v1/auth/login` | No | Login and receive token pair |
-| POST | `/api/v1/auth/refresh` | No | Rotate refresh token |
-| POST | `/api/v1/auth/logout` | No | Revoke tokens |
+| POST | `/api/v1/auth/login` | No | Login (returns user info and tokens) |
+| POST | `/api/v1/auth/refresh` | X-Refresh-Token header | Rotate tokens |
+| POST | `/api/v1/auth/logout` | Bearer + X-Refresh-Token | Revoke tokens |
 
 ### Categories
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/v1/categories` | List categories (`limit`, `offset`) |
+| GET | `/api/v1/categories` | List active categories (`limit`, `offset`) |
 | POST | `/api/v1/categories` | Create category |
+| GET | `/api/v1/categories/inactive` | List inactive (soft-deleted) categories (`limit`, `offset`) |
+| POST | `/api/v1/categories/bulk-delete` | Bulk soft delete categories |
+| POST | `/api/v1/categories/bulk-permanent-delete` | Bulk hard delete inactive categories |
 | GET | `/api/v1/categories/{id}` | Get category |
 | PUT | `/api/v1/categories/{id}` | Update category |
-| DELETE | `/api/v1/categories/{id}` | Delete category (blocked if active tasks exist) |
+| DELETE | `/api/v1/categories/{id}` | Soft delete category (sets `is_active = false`) |
+| DELETE | `/api/v1/categories/{id}/permanent` | Hard delete inactive category |
+| POST | `/api/v1/categories/{id}/reactivate` | Reactivate a soft-deleted category |
+
+**Category fields:**
+- `name` (required): Max 100 characters. Unique per user among active categories (case-insensitive). Whitespace is trimmed.
+- `description` (optional): Max 500 characters.
+- `colour` (optional): Hex colour code in `#RRGGBB` format (e.g., `#ff0000`). Accepts upper/lower case; stored as lower-case. Defaults to `#808080` on create. If omitted on update, keeps existing value.
+
+**Lifecycle (soft-then-hard delete):**
+- `DELETE /categories/{id}`: sets `is_active = false` (soft delete). Returns 409 if already inactive or if the category has active tasks (deactivate tasks first).
+- `DELETE /categories/{id}/permanent`: hard deletes the category and cascades to all associated tasks. Returns 409 if still active.
+- Reactivation fails if another active category has the same name (case-insensitive).
+
+**Bulk operations:**
+- Accepts 1–100 IDs per request: `{"ids": ["uuid1", "uuid2", ...]}`
+- `bulk-delete`: soft deletes active categories (inactive IDs are ignored)
+- `bulk-permanent-delete`: hard deletes inactive categories (active IDs are ignored)
+- Returns `{"requested": N, "soft_deleted": M}` or `{"requested": N, "permanently_deleted": M}`
+
+**Error codes:**
+- `400`: Invalid input (empty name, invalid colour format, name too long)
+- `409`: Category with this name already exists, category is already inactive/active, category has active tasks, or cannot permanently delete an active category
 
 ### Tasks
 
@@ -153,9 +196,29 @@ All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header
 |---|---|---|
 | GET | `/api/v1/tasks` | List tasks (`category_id`, `active`, `limit`, `offset`) |
 | POST | `/api/v1/tasks` | Create task with schedule and optional select options |
+| GET | `/api/v1/tasks/inactive` | List inactive (soft-deleted) tasks (`limit`, `offset`) |
+| POST | `/api/v1/tasks/bulk-delete` | Bulk soft delete tasks |
+| POST | `/api/v1/tasks/bulk-permanent-delete` | Bulk hard delete inactive tasks |
 | GET | `/api/v1/tasks/{id}` | Get task with schedule and select options |
 | PUT | `/api/v1/tasks/{id}` | Update task name and description |
-| DELETE | `/api/v1/tasks/{id}` | Soft delete (sets `is_active = false`) |
+| DELETE | `/api/v1/tasks/{id}` | Soft delete task (sets `is_active = false`) |
+| DELETE | `/api/v1/tasks/{id}/permanent` | Hard delete inactive task |
+| POST | `/api/v1/tasks/{id}/reactivate` | Reactivate a soft-deleted task |
+
+**Lifecycle (soft-then-hard delete):**
+- `DELETE /tasks/{id}`: sets `is_active = false` (soft delete). Returns 409 if already inactive.
+- `DELETE /tasks/{id}/permanent`: hard deletes the task and cascades to all associated schedules, select options, occurrences, and answers. Returns 409 if still active.
+- Reactivation fails if the task's category is inactive (must reactivate category first).
+
+**Bulk operations:**
+- Accepts 1–100 IDs per request: `{"ids": ["uuid1", "uuid2", ...]}`
+- `bulk-delete`: soft deletes active tasks (inactive IDs are ignored)
+- `bulk-permanent-delete`: hard deletes inactive tasks (active IDs are ignored)
+- Returns `{"requested": N, "soft_deleted": M}` or `{"requested": N, "permanently_deleted": M}`
+
+**Deep-hide filtering:**
+- Tasks whose category is inactive are automatically hidden from all listing and get endpoints.
+- This applies even if the task itself is active — a task is only visible when both the task and its category are active.
 
 ### Occurrences
 
@@ -164,6 +227,15 @@ All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header
 | GET | `/api/v1/occurrences` | Generate and list occurrences (`date` or `start_date` + `end_date` required) |
 | POST | `/api/v1/occurrences/{id}/answer` | Submit or update an answer |
 | POST | `/api/v1/occurrences/{id}/suppress` | Mark occurrence as skipped for this day |
+| POST | `/api/v1/occurrences/{id}/unsuppress` | Remove the skipped/suppressed flag |
+
+**Suppression behavior:**
+- Suppressed occurrences reject answers with `409 Conflict` — unsuppress first to submit an answer.
+- Use suppress to mark a task as deliberately skipped without recording a false/zero value.
+
+**Deep-hide filtering:**
+- Occurrences for inactive tasks or inactive categories are automatically hidden from all listing endpoints.
+- This ensures archived data is not surfaced to users.
 
 ### Daily Logs
 
@@ -171,7 +243,24 @@ All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header
 |---|---|---|
 | GET | `/api/v1/daily-logs` | List logs (`date` or `start_date` + `end_date`; defaults to today) |
 | POST | `/api/v1/daily-logs` | Create journal entry (one per day) |
+| GET | `/api/v1/daily-logs/inactive` | List inactive (soft-deleted) daily logs (`limit`, `offset`) |
+| POST | `/api/v1/daily-logs/bulk-delete` | Bulk soft delete daily logs |
+| POST | `/api/v1/daily-logs/bulk-permanent-delete` | Bulk hard delete inactive daily logs |
 | PUT | `/api/v1/daily-logs/{id}` | Update journal entry |
+| DELETE | `/api/v1/daily-logs/{id}` | Soft delete daily log (sets `is_active = false`) |
+| DELETE | `/api/v1/daily-logs/{id}/permanent` | Hard delete inactive daily log |
+| POST | `/api/v1/daily-logs/{id}/reactivate` | Reactivate a soft-deleted daily log |
+
+**Lifecycle (soft-then-hard delete):**
+- `DELETE /daily-logs/{id}`: sets `is_active = false` (soft delete). Returns 409 if already inactive.
+- `DELETE /daily-logs/{id}/permanent`: hard deletes the daily log. Returns 409 if still active.
+
+**Bulk operations:**
+- Accepts 1–100 IDs per request: `{"ids": ["uuid1", "uuid2", ...]}`
+- `bulk-delete`: soft deletes active daily logs (inactive IDs are ignored)
+- `bulk-permanent-delete`: hard deletes inactive daily logs (active IDs are ignored)
+- Duplicate IDs are deduplicated server-side
+- Returns `{"requested": N, "soft_deleted": M}` or `{"requested": N, "permanently_deleted": M}`
 
 ### Health and Metrics
 
@@ -184,27 +273,71 @@ All `/api/v1/*` endpoints require a valid `Authorization: Bearer <token>` header
 
 ## Authentication
 
-The API uses RS256-signed JWTs. On login, two tokens are issued: a short-lived access token (15 minutes) and a longer-lived refresh token (1 hour).
+The API uses RS256-signed JWTs passed in HTTP headers. Access tokens are valid for 15 minutes and refresh tokens for 1 hour with rotation.
 
-**Access token** — send in the `Authorization: Bearer <token>` header on every protected request. Claims include `sub` (user ID), `iss`, `aud`, `exp`, `nbf`, `iat`, and `jti`.
+### Headers
 
-**Refresh token** — opaque 32-byte random value stored as a SHA-256 hash in PostgreSQL. On use, the old token is deleted and a new pair is issued (rotation). If the same refresh token is used twice, the second attempt is rejected.
+| Header | Endpoint | Purpose |
+|---|---|---|
+| `Authorization: Bearer <token>` | All `/api/v1/*` | Access token for authentication |
+| `X-Refresh-Token: <token>` | `/auth/refresh`, `/auth/logout` | Refresh token for rotation/revocation |
 
-**Logout** — deletes the refresh token from the database and adds the access token's `jti` to a Valkey blocklist with a TTL matching the token's remaining lifetime. The blocklist is checked on every authenticated request.
+### Access Token
 
-**Token lifecycle:**
+RS256-signed JWT with claims: `sub` (user ID), `iss`, `aud`, `exp`, `nbf`, `iat`, and `jti`. Validated on every authenticated request. Revoked JTIs are stored in Valkey blocklist.
+
+### Refresh Token
+
+32 random bytes, base64url-encoded. Stored as SHA-256 hash in PostgreSQL. On use, the old token is deleted and a new pair is issued (rotation). If the same refresh token is used twice, the second attempt is rejected.
+
+### Token Lifecycle
 
 ```
-POST /auth/login
-  → access_token (15 min) + refresh_token (1 hr)
+POST /auth/register { username, password }
+  → Returns: { id, username, created_at, updated_at }
 
-POST /auth/refresh  { refresh_token }
-  → new access_token + new refresh_token
-  → old refresh_token is deleted
+POST /auth/login { username, password }
+  → Returns: { user, access_token, refresh_token, expires_at, token_type }
 
-POST /auth/logout  { refresh_token }  + Authorization: Bearer <access_token>
-  → refresh_token deleted from database
-  → access_token jti added to Valkey blocklist
+POST /auth/refresh
+  Headers: X-Refresh-Token: <refresh_token>
+  → Returns: { access_token, refresh_token, expires_at, token_type }
+
+POST /auth/logout
+  Headers: Authorization: Bearer <access_token>
+           X-Refresh-Token: <refresh_token>
+  → Verifies refresh token ownership
+  → Deletes refresh token from database
+  → Adds access token JTI to blocklist
+  → Returns: 204 No Content
+```
+
+### JavaScript Example
+
+```javascript
+// Store tokens after login
+const response = await fetch('/api/v1/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ username, password })
+});
+const { access_token, refresh_token, expires_at } = await response.json();
+
+// Make authenticated requests
+fetch('/api/v1/categories', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${access_token}`
+  },
+  body: JSON.stringify({ name: 'New Category' })
+});
+
+// Refresh tokens before expiry
+fetch('/api/v1/auth/refresh', {
+  method: 'POST',
+  headers: { 'X-Refresh-Token': refresh_token }
+});
 ```
 
 ---
@@ -245,39 +378,42 @@ Select tasks require 2–10 options at creation. Options are fixed — to change
 
 Answers are upserted — submitting a second answer for the same occurrence replaces the first. `created_at` is preserved, `updated_at` and `answered_at` are updated.
 
-Suppressed occurrences still accept answers. Suppression marks a task as deliberately skipped but does not prevent recording data.
+Suppressed occurrences reject answers with `409 Conflict`. Unsuppress the occurrence first if you need to submit an answer. This ensures suppression cleanly represents "intentionally skipped" without mixed state.
 
 ---
 
 ## Database
 
-Three migrations in `migrations/`:
+Migrations in `migrations/`:
 
-- `00001_initial_schema.sql` — legacy logs table
-- `00002_task_manager.sql` — users, refresh tokens, categories, tasks, schedules, select options, occurrences, answers, daily logs
-- `00003_fix_occurrence_unique.sql` — partial unique indexes for NULL-safe occurrence deduplication
+- `00001_initial_schema.sql` — complete database schema including users, refresh tokens, categories, tasks, schedules, select options, occurrences, answers, and daily logs with all indexes and constraints
 
 Run migrations with `make db-migrate`. Roll back with `make db-reset`. Check status with `make db-status`.
 
 All migrations are managed by Goose and run inside the app container.
 
-**Occurrence generation** follows the iCalendar materialised occurrence pattern — occurrences are generated on demand when `GET /occurrences` is called and upserted into `task_occurrences`. Calling the same date twice is idempotent.
+**Occurrence generation** follows the iCalendar materialised occurrence pattern — occurrences are generated on demand when `GET /occurrences` is called and upserted into `task_occurrences`. Calling the same date twice is idempotent. Occurrence uniqueness is enforced per-task, not per-schedule — this ensures a task generates exactly one occurrence per date/time slot regardless of how schedules are configured.
+
+**Soft delete pattern** — Categories, tasks, and daily logs use soft delete via `is_active` column. First delete sets `is_active = false`, second delete (via `/permanent` endpoint) performs hard delete with cascade.
 
 ---
 
 ## Security
 
-- **Passwords** — Argon2id with 64MB memory, 3 iterations, 2 threads, random 16-byte salt per password. Constant-time comparison on verification.
+- **Passwords** — Argon2id with 64MB memory, 3 iterations, 2 threads, random 16-byte salt per password. Constant-time comparison on verification. Length: 8–128 code points (runes) after NFKC normalization. No composition rules (uppercase/lowercase/digit requirements) — passphrases with spaces are allowed. ASCII control characters (U+0000–U+0008, U+000B, U+000C, U+000E–U+001F, U+007F) are rejected; tab, LF, CR, and space are allowed. NFKC normalization ensures that visually similar inputs (e.g., full-width `ｐａｓｓｗｏｒｄ` vs ASCII `password`) hash identically.
 - **JWT signing** — RS256 only. Algorithm is whitelisted in the verifier — the `alg` header from the token is never trusted.
-- **Refresh tokens** — stored as SHA-256 hashes only. The plaintext token is never stored.
+- **Refresh tokens** — stored as SHA-256 hashes only. The plaintext token is never stored. Ownership verified before deletion (prevents cross-user logout attacks).
 - **Blocklist** — revoked access token JTIs are stored in Valkey with TTL equal to the token's remaining lifetime. Checked on every authenticated request.
-- **Input sanitisation** — all string inputs are processed through bluemonday strict policy, null byte stripping, and HTML unescape before validation. Passwords are not sanitised.
+- **Input sanitisation** — all string inputs are processed through bluemonday strict policy, null byte stripping, and HTML unescape before validation. Passwords are NOT sanitised (bluemonday would mangle legitimate special characters); instead, control character validation is applied separately.
+- **Unicode-aware length validation** — free-text fields (names, descriptions, entries) use rune count (`utf8.RuneCountInString`) instead of byte length for length limits. This matches PostgreSQL `VARCHAR(n)` character semantics and prevents multi-byte characters from failing validation or being truncated. Length validation is owned by the service layer; repositories only perform type and shape guards.
 - **Request limits** — 1MB body limit, 60-second global timeout, read header timeout 5s, write timeout 30s.
 - **Security headers** — `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
 - **CORS** — explicit origin allowlist from `CORS_ALLOWED_ORIGINS`. Wildcards are not supported.
 - **Pagination** — limit capped at 100, offset capped at 10,000. Non-integer values return 400.
 
-**Known limitations:** No application-level brute-force protection on login — implement this at the infrastructure layer (reverse proxy, WAF, or rate-limiting middleware). The `/metrics` endpoint has no authentication — restrict it via network policy or reverse proxy in production.
+**Known limitations:**
+- No application-level brute-force protection on login — implement this at the infrastructure layer (reverse proxy, WAF, or rate-limiting middleware).
+- The `/metrics` endpoint has no authentication — restrict it via network policy or reverse proxy in production.
 
 ---
 
@@ -315,9 +451,11 @@ make socket      # Socket.dev supply chain scan (requires npm install -g socket)
 Development
   setup            First-time setup: copies .env, installs hooks, builds containers
   build            Build containers and run migrations
+  build-binary     Build the API binary with version metadata injected
   run              Start containers and run migrations
   logs             View application logs
   destroy          Destroy all containers, volumes, and images
+  clean            Delete all temp, build, and test folders
 
 Database
   db-migrate       Run pending migrations
@@ -340,18 +478,18 @@ Typical workflow
   First time:  make setup
   Daily:       make run → make logs
   Fresh start: make destroy → make build
+  Tidy up:     make clean
 ```
 
----
-
 ## TODO
-- Category: If the same name exist, block the creation.
-- Delete daily logs
-- Hard delete for tasks
-- If occurrence is suppressed, newly submitted answers should be denied.
-- Password 8 Character limit must include 1 upper case character, 1 lower case character, a number and a special character.
-- Add email based MFA
+
+- Target based answer: for example 1/4.
+- Password deny list usage.
+- Refresh token receive only via header (to prevent JS access), and Bearer Token only 15 mins
 - User account update (name, theme, accent colour)
+- font size in profile
+- theme colour in profile
+- Add email based MFA
+- Test script to work with MFA
 - User delete
 - Front end based e2e encryption toggle for user data
-- Test script to work with MFA

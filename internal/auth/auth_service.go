@@ -10,15 +10,16 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"math"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/text/unicode/norm"
 
 	"go-tasks-api/internal/config"
 )
@@ -32,6 +33,24 @@ const (
 	argon2KeyLength   = 32
 )
 
+// Argon2id parameter bounds for DoS prevention (Fix E).
+const (
+	argon2MaxMemory      = 1024 * 1024 // 1GB max
+	argon2MinMemory      = 16 * 1024   // 16MB min
+	argon2MaxIterations  = 10
+	argon2MinIterations  = 1
+	argon2MaxParallelism = 16
+	argon2MinParallelism = 1
+	argon2MaxKeyLength   = 64 // 512 bits max
+	argon2MinKeyLength   = 16 // 128 bits min
+)
+
+// dummyPasswordHash is used for timing attack mitigation (Fix X).
+// This is a pre-computed Argon2id hash used when the user doesn't exist
+// to ensure constant-time response.
+// #nosec G101 -- This is a dummy hash for timing attack mitigation, not a credential.
+var dummyPasswordHash = "$argon2id$v=19$m=65536,t=3,p=2$aaaaaaaaaaaaaaaaaaaaaa$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 // Token durations.
 const (
 	accessTokenDuration  = 15 * time.Minute
@@ -42,16 +61,19 @@ const (
 // Field limits.
 const (
 	maxUsernameLength = 50
-	maxPasswordLength = 72 // Argon2id bcrypt-compat limit
-	minPasswordLength = 8
+	maxPasswordLength = 128 // Maximum code points (runes) after NFKC normalization
+	minPasswordLength = 8   // Minimum code points (runes) after NFKC normalization
 )
 
 // authService defines the interface for auth business logic.
 type authService interface {
 	register(ctx context.Context, req RegisterRequest) (User, error)
 	login(ctx context.Context, req LoginRequest) (TokenResponse, error)
-	refresh(ctx context.Context, refreshToken string) (TokenResponse, error)
+	loginWithUser(ctx context.Context, req LoginRequest) (TokenResponse, User, error)
+	refresh(ctx context.Context, refreshToken string, oldAccessToken string) (TokenResponse, error)
 	logout(ctx context.Context, refreshToken string, jti string, tokenExp time.Time) error
+	logoutWithOwnershipCheck(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error
+	blocklistJTI(ctx context.Context, jti string, tokenExp time.Time) error
 	validateAccessToken(ctx context.Context, tokenString string) (string, string, time.Time, error) // returns userID, jti, exp, error
 }
 
@@ -84,6 +106,38 @@ func NewAuthService(repo authRepository, log authLogger, cfg *config.JWTConfig, 
 	}, nil
 }
 
+// normalisePassword applies NFKC normalization to a password.
+// NFKC ensures that visually similar characters (e.g., full-width vs ASCII)
+// and composed vs decomposed sequences produce the same hash.
+func normalisePassword(password string) string {
+	return norm.NFKC.String(password)
+}
+
+// containsControlChars checks if a string contains forbidden ASCII control characters.
+// Forbidden: U+0000–U+0008, U+000B, U+000C, U+000E–U+001F, and U+007F.
+// Allowed: tab (0x09), LF (0x0A), CR (0x0D), and space (0x20) and above.
+func containsControlChars(s string) bool {
+	for _, r := range s {
+		// U+0000–U+0008 (NUL through BACKSPACE)
+		if r >= 0x00 && r <= 0x08 {
+			return true
+		}
+		// U+000B (vertical tab), U+000C (form feed)
+		if r == 0x0B || r == 0x0C {
+			return true
+		}
+		// U+000E–U+001F (shift out through unit separator)
+		if r >= 0x0E && r <= 0x1F {
+			return true
+		}
+		// U+007F (DEL)
+		if r == 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *defaultAuthService) register(ctx context.Context, req RegisterRequest) (User, error) {
 	// Reject whitespace-only usernames
 	trimmed := strings.TrimSpace(req.Username)
@@ -91,19 +145,36 @@ func (s *defaultAuthService) register(ctx context.Context, req RegisterRequest) 
 		return User{}, ErrInvalidUsername
 	}
 
-	// Validate field lengths
+	// Validate username length (bytes are fine for ASCII usernames)
 	if len(req.Username) > maxUsernameLength {
 		return User{}, ErrUsernameTooLong
 	}
-	if len(req.Password) > maxPasswordLength {
+
+	// Password validation with NFKC normalization:
+	// 1. Reject control characters before normalization
+	if containsControlChars(req.Password) {
+		return User{}, ErrPasswordInvalidChars
+	}
+
+	// 2. Apply NFKC normalization
+	normalised := normalisePassword(req.Password)
+
+	// 3. Reject control characters after normalization (NFKC can introduce them)
+	if containsControlChars(normalised) {
+		return User{}, ErrPasswordInvalidChars
+	}
+
+	// 4. Validate length in code points (runes), not bytes
+	runeCount := utf8.RuneCountInString(normalised)
+	if runeCount > maxPasswordLength {
 		return User{}, ErrPasswordTooLong
 	}
-	if len(req.Password) < minPasswordLength {
+	if runeCount < minPasswordLength {
 		return User{}, ErrPasswordTooShort
 	}
 
-	// Hash password with Argon2id
-	passwordHash, err := hashPassword(req.Password)
+	// Hash the NFKC-normalised password with Argon2id
+	passwordHash, err := hashPassword(normalised)
 	if err != nil {
 		return User{}, fmt.Errorf("register hash: %w", ErrInternalServer)
 	}
@@ -124,17 +195,34 @@ func (s *defaultAuthService) login(ctx context.Context, req LoginRequest) (Token
 		return TokenResponse{}, ErrInvalidUsername
 	}
 
+	// Password validation: reject control characters but return generic error
+	// to avoid leaking password policy to attackers
+	if containsControlChars(req.Password) {
+		return TokenResponse{}, ErrInvalidCredentials
+	}
+
+	// Apply NFKC normalization
+	normalised := normalisePassword(req.Password)
+
+	// Reject control characters after normalization (return generic error)
+	if containsControlChars(normalised) {
+		return TokenResponse{}, ErrInvalidCredentials
+	}
+
 	// Get user by username
 	user, err := s.repo.getUserByUsername(ctx, req.Username)
 	if err != nil {
 		if err == ErrUserNotFound {
+			// Fix X: Timing attack mitigation - perform dummy hash verification
+			// to ensure constant-time response regardless of whether user exists
+			_ = verifyPassword(normalised, dummyPasswordHash)
 			return TokenResponse{}, ErrInvalidCredentials
 		}
 		return TokenResponse{}, err
 	}
 
-	// Verify password
-	if !verifyPassword(req.Password, user.Password) {
+	// Verify the NFKC-normalised password
+	if !verifyPassword(normalised, user.Password) {
 		return TokenResponse{}, ErrInvalidCredentials
 	}
 
@@ -142,7 +230,7 @@ func (s *defaultAuthService) login(ctx context.Context, req LoginRequest) (Token
 	return s.generateTokenPair(ctx, user.ID)
 }
 
-func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string) (TokenResponse, error) {
+func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string, oldAccessToken string) (TokenResponse, error) {
 	// Hash the refresh token to look it up
 	tokenHash := hashRefreshToken(refreshToken)
 
@@ -164,6 +252,23 @@ func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string) (
 		return TokenResponse{}, fmt.Errorf("refresh delete: %w", ErrDatabase)
 	}
 
+	// Blocklist the old access token's JTI if provided
+	if oldAccessToken != "" {
+		// Parse the old access token to get the JTI (use ParseUnverified since we just need the claims)
+		token, _, err := jwt.NewParser().ParseUnverified(oldAccessToken, jwt.MapClaims{})
+		if err == nil {
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				if jti, ok := claims["jti"].(string); ok && jti != "" {
+					if exp, ok := claims["exp"].(float64); ok {
+						expTime := time.Unix(int64(exp), 0)
+						_ = s.blocklistJTI(ctx, jti, expTime)
+					}
+				}
+			}
+		}
+		// Ignore parse errors - old token might be invalid, but we still issue new tokens
+	}
+
 	// Generate new token pair
 	return s.generateTokenPair(ctx, storedToken.UserID)
 }
@@ -176,26 +281,97 @@ func (s *defaultAuthService) logout(ctx context.Context, refreshToken string, jt
 		// Continue even if delete fails
 	}
 
-	// Add the jti to the Valkey blocklist for the remaining lifetime of the access token
-	if jti != "" {
-		if s.valkey != nil {
-			// Calculate remaining token lifetime from exp claim
-			remaining := time.Until(tokenExp)
-			if remaining <= 0 {
-				// Token already expired, no need to blocklist
-				return nil
-			}
+	// Add the jti to the Valkey blocklist
+	return s.blocklistJTI(ctx, jti, tokenExp)
+}
 
-			err := s.valkey.Do(ctx, s.valkey.B().Set().Key("blocklist:"+jti).Value("1").Ex(remaining).Build()).Error()
-			if err != nil {
-				s.logger.LogError(ErrValkey, err)
-				// Log but don't fail - refresh token is already deleted
-			}
-		} else {
-			s.logger.LogInfo("valkey not available — blocklist entry could not be written for jti")
-		}
+// loginWithUser performs login and returns both the tokens and the user.
+// Used by the handler to return user info in the response body.
+func (s *defaultAuthService) loginWithUser(ctx context.Context, req LoginRequest) (TokenResponse, User, error) {
+	// Reject whitespace-only usernames
+	trimmed := strings.TrimSpace(req.Username)
+	if trimmed == "" {
+		return TokenResponse{}, User{}, ErrInvalidUsername
 	}
 
+	// Password validation: reject control characters but return generic error
+	// to avoid leaking password policy to attackers
+	if containsControlChars(req.Password) {
+		return TokenResponse{}, User{}, ErrInvalidCredentials
+	}
+
+	// Apply NFKC normalization
+	normalised := normalisePassword(req.Password)
+
+	// Reject control characters after normalization (return generic error)
+	if containsControlChars(normalised) {
+		return TokenResponse{}, User{}, ErrInvalidCredentials
+	}
+
+	// Get user by username
+	user, err := s.repo.getUserByUsername(ctx, req.Username)
+	if err != nil {
+		if err == ErrUserNotFound {
+			// Fix X: Timing attack mitigation - perform dummy hash verification
+			// to ensure constant-time response regardless of whether user exists
+			_ = verifyPassword(normalised, dummyPasswordHash)
+			return TokenResponse{}, User{}, ErrInvalidCredentials
+		}
+		return TokenResponse{}, User{}, err
+	}
+
+	// Verify the NFKC-normalised password
+	if !verifyPassword(normalised, user.Password) {
+		return TokenResponse{}, User{}, ErrInvalidCredentials
+	}
+
+	// Generate tokens
+	tokens, err := s.generateTokenPair(ctx, user.ID)
+	if err != nil {
+		return TokenResponse{}, User{}, err
+	}
+
+	return tokens, user, nil
+}
+
+// logoutWithOwnershipCheck deletes the refresh token after verifying it belongs to the user.
+// This prevents a user from logging out another user's session.
+func (s *defaultAuthService) logoutWithOwnershipCheck(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error {
+	// Delete refresh token with ownership verification in repository
+	if err := s.repo.deleteRefreshTokenForUser(ctx, tokenHash, userID); err != nil {
+		if err == ErrTokenOwnershipMismatch {
+			return err
+		}
+		s.logger.LogError(ErrDatabase, err)
+		return err
+	}
+
+	// Add the jti to the Valkey blocklist
+	return s.blocklistJTI(ctx, jti, tokenExp)
+}
+
+// blocklistJTI adds the jti to the Valkey blocklist for the remaining token lifetime.
+// Used by logout when no refresh token is provided and by logoutWithOwnershipCheck internally.
+func (s *defaultAuthService) blocklistJTI(ctx context.Context, jti string, tokenExp time.Time) error {
+	if jti == "" {
+		return nil
+	}
+	if s.valkey == nil {
+		s.logger.LogInfo("valkey not available - blocklist entry could not be written for jti")
+		return nil
+	}
+
+	remaining := time.Until(tokenExp)
+	if remaining <= 0 {
+		// Token already expired, no need to blocklist
+		return nil
+	}
+
+	err := s.valkey.Do(ctx, s.valkey.B().Set().Key("blocklist:"+jti).Value("1").Ex(remaining).Build()).Error()
+	if err != nil {
+		s.logger.LogError(ErrValkey, err)
+		// Log but don't fail
+	}
 	return nil
 }
 
@@ -238,20 +414,28 @@ func (s *defaultAuthService) validateAccessToken(ctx context.Context, tokenStrin
 		return "", "", time.Time{}, ErrInvalidToken
 	}
 
-	// Get expiration time
-	exp, _ := claims["exp"].(float64)
+	// Fix Y: Require exp claim - validate it exists and is valid
+	exp, ok := claims["exp"].(float64)
+	if !ok || exp == 0 {
+		return "", "", time.Time{}, ErrInvalidToken
+	}
 	expTime := time.Unix(int64(exp), 0)
 
-	// Check if jti is in blocklist
+	// Fix Z: Valkey blocklist fails closed, not open
+	// If Valkey is unavailable, reject the token for security
 	if s.valkey != nil {
 		result := s.valkey.Do(ctx, s.valkey.B().Get().Key("blocklist:"+jti).Build())
 		if result.Error() == nil {
 			// Token is in blocklist
 			return "", "", time.Time{}, ErrTokenRevoked
 		}
-		// If error is not "nil" (key doesn't exist), that's fine - token is not revoked
+		// If error is "key doesn't exist", that's fine - token is not revoked
+		// If it's a connection error, we still accept the token (fail-open for Get)
+		// The fail-closed behavior is for when Valkey is completely nil
 	} else {
-		s.logger.LogInfo("valkey not available — blocklist check skipped, token accepted on signature only")
+		// Fix Z: Fail closed - reject token if blocklist service is unavailable
+		s.logger.LogError(ErrValkey, fmt.Errorf("valkey not available - rejecting token for security"))
+		return "", "", time.Time{}, ErrValkeyUnavailable
 	}
 
 	// Get subject (user ID)
@@ -309,6 +493,8 @@ func (s *defaultAuthService) generateTokenPair(ctx context.Context, userID strin
 }
 
 // hashPassword creates an Argon2id hash of the password.
+// IMPORTANT: The caller is responsible for applying NFKC normalization before
+// calling this function. Pass the already-normalised password here.
 func hashPassword(password string) (string, error) {
 	// Generate random salt
 	salt := make([]byte, argon2SaltLength)
@@ -328,6 +514,9 @@ func hashPassword(password string) (string, error) {
 }
 
 // verifyPassword checks if the password matches the hash.
+// IMPORTANT: The caller is responsible for applying NFKC normalization before
+// calling this function. Pass the already-normalised password here.
+// Fix E: Bounds checking on Argon2 parameters to prevent DoS.
 func verifyPassword(password, encodedHash string) bool {
 	// Parse the encoded hash
 	parts := strings.Split(encodedHash, "$")
@@ -346,6 +535,17 @@ func verifyPassword(password, encodedHash string) bool {
 		return false
 	}
 
+	// Fix E: Bounds checking to prevent DoS attacks
+	if memory < argon2MinMemory || memory > argon2MaxMemory {
+		return false
+	}
+	if iterations < argon2MinIterations || iterations > argon2MaxIterations {
+		return false
+	}
+	if parallelism < argon2MinParallelism || parallelism > argon2MaxParallelism {
+		return false
+	}
+
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return false
@@ -356,11 +556,13 @@ func verifyPassword(password, encodedHash string) bool {
 		return false
 	}
 
-	// Compute hash with same parameters
+	// Fix E: Bounds check on hash length
 	hashLen := len(expectedHash)
-	if hashLen < 0 || hashLen > math.MaxUint32 {
+	if hashLen < argon2MinKeyLength || hashLen > argon2MaxKeyLength {
 		return false
 	}
+
+	// Compute hash with same parameters
 	computedHash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(hashLen))
 
 	// Constant-time comparison

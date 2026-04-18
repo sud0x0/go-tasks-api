@@ -39,20 +39,21 @@ func setupTestStack(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 
 	logger := &mockLogger{}
 
-	// Prepare all statements
-	mock.ExpectPrepare("SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at")
-	mock.ExpectPrepare("SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at")
-	mock.ExpectPrepare("SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at")
-	mock.ExpectPrepare("INSERT INTO task_occurrences")
-	mock.ExpectPrepare("INSERT INTO task_occurrences")
-	mock.ExpectPrepare("UPDATE task_occurrences SET is_suppressed")
-	mock.ExpectPrepare("SELECT COUNT")
-	mock.ExpectPrepare("SELECT id, occurrence_id, user_id")
-	mock.ExpectPrepare("INSERT INTO task_answers")
-	mock.ExpectPrepare("SELECT id, user_id, category_id, name")
-	mock.ExpectPrepare("SELECT ts.id, ts.task_id")
-	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")
-	mock.ExpectPrepare("SELECT EXISTS")
+	// Prepare all statements in order from NewOccurrenceRepository
+	mock.ExpectPrepare("SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t ON o.task_id = t.id.*JOIN categories c ON t.category_id = c.id.*WHERE o.id =")               // getOccurrence
+	mock.ExpectPrepare("SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t ON o.task_id = t.id.*JOIN categories c ON t.category_id = c.id.*WHERE o.user_id =.*= \\$2")  // getOccurrencesByDate
+	mock.ExpectPrepare("SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t ON o.task_id = t.id.*JOIN categories c ON t.category_id = c.id.*WHERE o.user_id =.*>= \\$2") // getOccurrencesByDateRange
+	mock.ExpectPrepare("INSERT INTO task_occurrences.*ON CONFLICT \\(task_id, occurrence_date, scheduled_time\\)")                                                                 // upsertTimedOccurrence
+	mock.ExpectPrepare("INSERT INTO task_occurrences.*ON CONFLICT \\(task_id, occurrence_date\\)")                                                                                 // upsertUntimedOccurrence
+	mock.ExpectPrepare("UPDATE task_occurrences SET is_suppressed = true")                                                                                                         // suppressOccurrence
+	mock.ExpectPrepare("UPDATE task_occurrences SET is_suppressed = false")                                                                                                        // unsuppressOccurrence
+	mock.ExpectPrepare("SELECT COUNT")                                                                                                                                             // countOccurrences
+	mock.ExpectPrepare("SELECT id, occurrence_id, user_id")                                                                                                                        // getAnswer
+	mock.ExpectPrepare("INSERT INTO task_answers")                                                                                                                                 // upsertAnswer
+	mock.ExpectPrepare("SELECT t.id, t.user_id.*FROM tasks t.*JOIN categories c ON t.category_id = c.id")                                                                          // getTask
+	mock.ExpectPrepare("SELECT ts.id, ts.task_id.*FROM task_schedules ts.*JOIN tasks t ON ts.task_id = t.id.*JOIN categories c")                                                   // getActiveSchedulesByDate
+	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")                                                                                                                    // getSelectOptions
+	mock.ExpectPrepare("SELECT EXISTS.*FROM task_select_options")                                                                                                                  // checkSelectOptionExists
 
 	repo := NewOccurrenceRepository(db, logger)
 	service := NewOccurrenceService(repo, logger)
@@ -136,12 +137,12 @@ func TestOccurrenceHandler(t *testing.T) {
 		fmt.Println("Running Test: List Occurrences By Date - Empty")
 
 		// First, check for active schedules - return empty
-		mock.ExpectQuery(`SELECT ts.id, ts.task_id`).
+		mock.ExpectQuery(`SELECT ts.id, ts.task_id.*FROM task_schedules ts.*JOIN tasks t ON ts.task_id = t.id.*JOIN categories c`).
 			WithArgs(testUserID, parsedDate).
 			WillReturnRows(mockScheduleRows())
 
 		// Then get occurrences - return empty
-		mock.ExpectQuery(`SELECT .+ FROM task_occurrences WHERE user_id = \$1 AND occurrence_date = \$2`).
+		mock.ExpectQuery(`SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t.*JOIN categories c.*WHERE o.user_id = \$1 AND o.occurrence_date = \$2`).
 			WithArgs(testUserID, parsedDate).
 			WillReturnRows(mockOccurrenceRows())
 
@@ -181,7 +182,7 @@ func TestOccurrenceHandler(t *testing.T) {
 		fmt.Println("Running Test: Suppress Occurrence")
 
 		// First get the occurrence to verify it exists
-		mock.ExpectQuery(`SELECT .+ FROM task_occurrences WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t.*JOIN categories c.*WHERE o.id = \$1 AND o.user_id = \$2`).
 			WithArgs(testOccurrenceID, testUserID).
 			WillReturnRows(mockOccurrenceRows().AddRow(
 				testOccurrenceID, testTaskID, testScheduleID, testUserID, parsedDate, nil, false, now,
@@ -217,7 +218,7 @@ func TestOccurrenceHandler(t *testing.T) {
 		fmt.Println("Running Test: Suppress Already Suppressed Occurrence")
 
 		// Get the occurrence - it's already suppressed
-		mock.ExpectQuery(`SELECT .+ FROM task_occurrences WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t.*JOIN categories c.*WHERE o.id = \$1 AND o.user_id = \$2`).
 			WithArgs(testOccurrenceID, testUserID).
 			WillReturnRows(mockOccurrenceRows().AddRow(
 				testOccurrenceID, testTaskID, testScheduleID, testUserID, parsedDate, nil, true, now,
@@ -250,14 +251,14 @@ func TestOccurrenceHandler(t *testing.T) {
 		trueVal := true
 
 		// Get the occurrence
-		mock.ExpectQuery(`SELECT .+ FROM task_occurrences WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t.*JOIN categories c.*WHERE o.id = \$1 AND o.user_id = \$2`).
 			WithArgs(testOccurrenceID, testUserID).
 			WillReturnRows(mockOccurrenceRows().AddRow(
 				testOccurrenceID, testTaskID, testScheduleID, testUserID, parsedDate, nil, false, now,
 			))
 
 		// Get the task to verify answer type
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT t.id, t.user_id.*FROM tasks t.*JOIN categories c ON t.category_id = c.id.*WHERE t.id = \$1 AND t.user_id = \$2`).
 			WithArgs(testTaskID, testUserID).
 			WillReturnRows(mockTaskRows().AddRow(
 				testTaskID, testUserID, testCategoryID, "Morning Workout", nil, task.AnswerTypeBoolean, true, now, now,
@@ -379,7 +380,7 @@ func TestOccurrenceHandler(t *testing.T) {
 		fmt.Println("Running Test: Occurrence Not Found")
 
 		nonExistentID := "00000000-0000-0000-0000-000000000000"
-		mock.ExpectQuery(`SELECT .+ FROM task_occurrences WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT o.id, o.task_id.*FROM task_occurrences o.*JOIN tasks t.*JOIN categories c.*WHERE o.id = \$1 AND o.user_id = \$2`).
 			WithArgs(nonExistentID, testUserID).
 			WillReturnRows(mockOccurrenceRows())
 
@@ -445,7 +446,7 @@ func TestOccurrenceHandler(t *testing.T) {
 		parsedStartDate, _ := time.Parse("2006-01-02", startDate)
 		parsedEndDate, _ := time.Parse("2006-01-02", endDate)
 
-		mock.ExpectQuery(`SELECT ts.id, ts.task_id`).
+		mock.ExpectQuery(`SELECT ts.id, ts.task_id.*FROM task_schedules ts.*JOIN tasks t ON ts.task_id = t.id.*JOIN categories c`).
 			WithArgs(testUserID, parsedStartDate, parsedEndDate).
 			WillReturnRows(mockScheduleRows())
 

@@ -10,11 +10,10 @@ import (
 )
 
 // Repository size limits (defence-in-depth validation).
+// Length validation for name, description, and option values is handled at the service layer
+// using rune count to match PostgreSQL VARCHAR(n) character semantics.
 const (
-	repoMaxUserIDLength      = 64
-	repoMaxNameLength        = 200
-	repoMaxDescriptionLength = 1000
-	repoMaxOptionValueLength = 100
+	repoMaxUserIDLength = 64
 )
 
 // int64SliceToArrayLiteral converts a Go []int64 to a PostgreSQL array literal string.
@@ -119,18 +118,30 @@ func parseStringArrayLiteral(s string) []string {
 
 // Prepared statement queries.
 const (
-	queryGetTask = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
-		FROM tasks WHERE id = $1 AND user_id = $2`
-	queryGetTasks = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
-		FROM tasks WHERE user_id = $1 AND is_active = $2 ORDER BY name ASC LIMIT $3 OFFSET $4`
-	queryGetTasksByCategoryID = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
-		FROM tasks WHERE user_id = $1 AND category_id = $2 AND is_active = $3 ORDER BY name ASC LIMIT $4 OFFSET $5`
+	queryGetTask = `SELECT t.id, t.user_id, t.category_id, t.name, t.description, t.answer_type, t.is_active, t.created_at, t.updated_at
+		FROM tasks t
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.id = $1 AND t.user_id = $2 AND c.is_active = true`
+	queryGetTasks = `SELECT t.id, t.user_id, t.category_id, t.name, t.description, t.answer_type, t.is_active, t.created_at, t.updated_at
+		FROM tasks t
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.user_id = $1 AND t.is_active = $2 AND c.is_active = true ORDER BY t.name ASC LIMIT $3 OFFSET $4`
+	queryGetTasksByCategoryID = `SELECT t.id, t.user_id, t.category_id, t.name, t.description, t.answer_type, t.is_active, t.created_at, t.updated_at
+		FROM tasks t
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.user_id = $1 AND t.category_id = $2 AND t.is_active = $3 AND c.is_active = true ORDER BY t.name ASC LIMIT $4 OFFSET $5`
 	queryCreateTask = `INSERT INTO tasks (user_id, category_id, name, description, answer_type)
 		VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at`
 	queryUpdateTask = `UPDATE tasks SET name = $1, description = $2, updated_at = NOW()
 		WHERE id = $3 AND user_id = $4 RETURNING id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at`
-	queryDeactivateTask      = `UPDATE tasks SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2`
+	queryDeactivateTask      = `UPDATE tasks SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2 AND is_active = true`
+	queryHardDeleteTask      = `DELETE FROM tasks WHERE id = $1 AND user_id = $2 AND is_active = false`
+	queryReactivateTask      = `UPDATE tasks SET is_active = true, updated_at = NOW() WHERE id = $1 AND user_id = $2 AND is_active = false RETURNING id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at`
+	queryGetTaskIsActive     = `SELECT is_active FROM tasks WHERE id = $1 AND user_id = $2`
 	queryCheckCategoryExists = `SELECT EXISTS(SELECT 1 FROM categories WHERE id = $1 AND user_id = $2)`
+	queryCheckCategoryActive = `SELECT is_active FROM categories WHERE id = $1 AND user_id = $2`
+	queryGetTaskCategoryID   = `SELECT category_id FROM tasks WHERE id = $1 AND user_id = $2`
+	queryGetInactiveTasks    = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at FROM tasks WHERE user_id = $1 AND is_active = false ORDER BY name ASC LIMIT $2 OFFSET $3`
 
 	queryCreateSchedule = `INSERT INTO task_schedules (task_id, recurrence_type, recurrence_interval, days_of_week,
 		month_day, month_week, month_weekday, month_of_year, scheduled_times, start_date, end_type, end_date, end_after_n)
@@ -151,12 +162,20 @@ const (
 type taskRepository interface {
 	getTask(ctx context.Context, id, userID string) (Task, error)
 	getTasks(ctx context.Context, userID string, isActive bool, limit, offset int) ([]Task, error)
+	getInactiveTasks(ctx context.Context, userID string, limit, offset int) ([]Task, error)
 	getTasksByCategoryID(ctx context.Context, userID, categoryID string, isActive bool, limit, offset int) ([]Task, error)
 	createTask(ctx context.Context, userID, categoryID, name string, description *string, answerType string) (Task, error)
 	createTaskWithScheduleAndOptions(ctx context.Context, userID, categoryID, name string, description *string, answerType string, schedule *Schedule, selectOptions []SelectOptionRequest) (WithDetails, error)
 	updateTask(ctx context.Context, id, userID, name string, description *string) (Task, error)
 	deactivateTask(ctx context.Context, id, userID string) error
+	hardDeleteTask(ctx context.Context, id, userID string) error
+	bulkDeactivateTasks(ctx context.Context, userID string, ids []string) (int, error)
+	bulkHardDeleteTasks(ctx context.Context, userID string, ids []string) (int, error)
+	reactivateTask(ctx context.Context, id, userID string) (Task, error)
+	getTaskIsActive(ctx context.Context, id, userID string) (bool, error)
+	getTaskCategoryID(ctx context.Context, id, userID string) (string, error)
 	categoryExists(ctx context.Context, categoryID, userID string) (bool, error)
+	categoryIsActive(ctx context.Context, categoryID, userID string) (bool, error)
 
 	createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error)
 	getScheduleByTaskID(ctx context.Context, taskID, userID string) (*Schedule, error)
@@ -172,11 +191,17 @@ type sqlTaskRepository struct {
 	db                           *sql.DB
 	stmtGetTask                  *sql.Stmt
 	stmtGetTasks                 *sql.Stmt
+	stmtGetInactiveTasks         *sql.Stmt
 	stmtGetTasksByCategoryID     *sql.Stmt
 	stmtCreateTask               *sql.Stmt
 	stmtUpdateTask               *sql.Stmt
 	stmtDeactivateTask           *sql.Stmt
+	stmtHardDeleteTask           *sql.Stmt
+	stmtReactivateTask           *sql.Stmt
+	stmtGetTaskIsActive          *sql.Stmt
+	stmtGetTaskCategoryID        *sql.Stmt
 	stmtCheckCategoryExists      *sql.Stmt
+	stmtCheckCategoryActive      *sql.Stmt
 	stmtCreateSchedule           *sql.Stmt
 	stmtGetScheduleByTaskID      *sql.Stmt
 	stmtCreateSelectOption       *sql.Stmt
@@ -200,6 +225,11 @@ func NewTaskRepository(db *sql.DB, _ taskLogger) taskRepository {
 		panic(fmt.Sprintf("task_repository: failed to prepare getTasks: %v", err))
 	}
 
+	repo.stmtGetInactiveTasks, err = db.Prepare(queryGetInactiveTasks)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getInactiveTasks: %v", err))
+	}
+
 	repo.stmtGetTasksByCategoryID, err = db.Prepare(queryGetTasksByCategoryID)
 	if err != nil {
 		panic(fmt.Sprintf("task_repository: failed to prepare getTasksByCategoryID: %v", err))
@@ -220,9 +250,34 @@ func NewTaskRepository(db *sql.DB, _ taskLogger) taskRepository {
 		panic(fmt.Sprintf("task_repository: failed to prepare deactivateTask: %v", err))
 	}
 
+	repo.stmtHardDeleteTask, err = db.Prepare(queryHardDeleteTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare hardDeleteTask: %v", err))
+	}
+
+	repo.stmtReactivateTask, err = db.Prepare(queryReactivateTask)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare reactivateTask: %v", err))
+	}
+
+	repo.stmtGetTaskIsActive, err = db.Prepare(queryGetTaskIsActive)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getTaskIsActive: %v", err))
+	}
+
+	repo.stmtGetTaskCategoryID, err = db.Prepare(queryGetTaskCategoryID)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare getTaskCategoryID: %v", err))
+	}
+
 	repo.stmtCheckCategoryExists, err = db.Prepare(queryCheckCategoryExists)
 	if err != nil {
 		panic(fmt.Sprintf("task_repository: failed to prepare checkCategoryExists: %v", err))
+	}
+
+	repo.stmtCheckCategoryActive, err = db.Prepare(queryCheckCategoryActive)
+	if err != nil {
+		panic(fmt.Sprintf("task_repository: failed to prepare checkCategoryActive: %v", err))
 	}
 
 	repo.stmtCreateSchedule, err = db.Prepare(queryCreateSchedule)
@@ -254,11 +309,17 @@ func (r *sqlTaskRepository) Close() error {
 	for _, stmt := range []*sql.Stmt{
 		r.stmtGetTask,
 		r.stmtGetTasks,
+		r.stmtGetInactiveTasks,
 		r.stmtGetTasksByCategoryID,
 		r.stmtCreateTask,
 		r.stmtUpdateTask,
 		r.stmtDeactivateTask,
+		r.stmtHardDeleteTask,
+		r.stmtReactivateTask,
+		r.stmtGetTaskIsActive,
+		r.stmtGetTaskCategoryID,
 		r.stmtCheckCategoryExists,
+		r.stmtCheckCategoryActive,
 		r.stmtCreateSchedule,
 		r.stmtGetScheduleByTaskID,
 		r.stmtCreateSelectOption,
@@ -308,6 +369,20 @@ func (r *sqlTaskRepository) getTasks(ctx context.Context, userID string, isActiv
 	return r.scanTasks(rows)
 }
 
+func (r *sqlTaskRepository) getInactiveTasks(ctx context.Context, userID string, limit, offset int) ([]Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return []Task{}, nil
+	}
+
+	rows, err := r.stmtGetInactiveTasks.QueryContext(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("getInactiveTasks: %w", ErrDatabase)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return r.scanTasks(rows)
+}
+
 func (r *sqlTaskRepository) getTasksByCategoryID(ctx context.Context, userID, categoryID string, isActive bool, limit, offset int) ([]Task, error) {
 	if len(userID) > repoMaxUserIDLength {
 		return []Task{}, nil
@@ -349,14 +424,10 @@ func (r *sqlTaskRepository) scanTasks(rows *sql.Rows) ([]Task, error) {
 }
 
 func (r *sqlTaskRepository) createTask(ctx context.Context, userID, categoryID, name string, description *string, answerType string) (Task, error) {
+	// Defence-in-depth: validate userID length.
+	// Name/description length validation is handled at the service layer.
 	if len(userID) > repoMaxUserIDLength {
 		return Task{}, fmt.Errorf("createTask: %w", ErrDatabase)
-	}
-	if len(name) > repoMaxNameLength {
-		return Task{}, ErrNameTooLong
-	}
-	if description != nil && len(*description) > repoMaxDescriptionLength {
-		return Task{}, ErrDescriptionTooLong
 	}
 
 	var t Task
@@ -379,14 +450,10 @@ func (r *sqlTaskRepository) createTask(ctx context.Context, userID, categoryID, 
 }
 
 func (r *sqlTaskRepository) updateTask(ctx context.Context, id, userID, name string, description *string) (Task, error) {
+	// Defence-in-depth: validate userID length.
+	// Name/description length validation is handled at the service layer.
 	if len(userID) > repoMaxUserIDLength {
 		return Task{}, ErrTaskNotFound
-	}
-	if len(name) > repoMaxNameLength {
-		return Task{}, ErrNameTooLong
-	}
-	if description != nil && len(*description) > repoMaxDescriptionLength {
-		return Task{}, ErrDescriptionTooLong
 	}
 
 	var t Task
@@ -435,6 +502,132 @@ func (r *sqlTaskRepository) categoryExists(ctx context.Context, categoryID, user
 		return false, fmt.Errorf("categoryExists %s: %w", categoryID, ErrDatabase)
 	}
 	return exists, nil
+}
+
+func (r *sqlTaskRepository) categoryIsActive(ctx context.Context, categoryID, userID string) (bool, error) {
+	var isActive bool
+	err := r.stmtCheckCategoryActive.QueryRowContext(ctx, categoryID, userID).Scan(&isActive)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrCategoryNotFound
+		}
+		return false, fmt.Errorf("categoryIsActive %s: %w", categoryID, ErrDatabase)
+	}
+	return isActive, nil
+}
+
+func (r *sqlTaskRepository) hardDeleteTask(ctx context.Context, id, userID string) error {
+	if len(userID) > repoMaxUserIDLength {
+		return ErrTaskNotFound
+	}
+
+	result, err := r.stmtHardDeleteTask.ExecContext(ctx, id, userID)
+	if err != nil {
+		return fmt.Errorf("hardDeleteTask %s: %w", id, ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("hardDeleteTask rowsAffected %s: %w", id, ErrDatabase)
+	}
+
+	if rowsAffected == 0 {
+		return ErrTaskNotFound
+	}
+	return nil
+}
+
+func (r *sqlTaskRepository) bulkDeactivateTasks(ctx context.Context, userID string, ids []string) (int, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return 0, nil
+	}
+
+	query := `UPDATE tasks SET is_active = false, updated_at = NOW() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = true`
+	result, err := r.db.ExecContext(ctx, query, userID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("bulkDeactivateTasks: %w", ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("bulkDeactivateTasks rowsAffected: %w", ErrDatabase)
+	}
+
+	return int(rowsAffected), nil
+}
+
+func (r *sqlTaskRepository) bulkHardDeleteTasks(ctx context.Context, userID string, ids []string) (int, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return 0, nil
+	}
+
+	query := `DELETE FROM tasks WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = false`
+	result, err := r.db.ExecContext(ctx, query, userID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("bulkHardDeleteTasks: %w", ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("bulkHardDeleteTasks rowsAffected: %w", ErrDatabase)
+	}
+
+	return int(rowsAffected), nil
+}
+
+func (r *sqlTaskRepository) reactivateTask(ctx context.Context, id, userID string) (Task, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return Task{}, ErrTaskNotFound
+	}
+
+	var t Task
+	err := r.stmtReactivateTask.QueryRowContext(ctx, id, userID).Scan(
+		&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
+		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, ErrTaskNotFound
+		}
+		return Task{}, fmt.Errorf("reactivateTask %s: %w", id, ErrDatabase)
+	}
+
+	if err := t.Validate(); err != nil {
+		return Task{}, fmt.Errorf("reactivateTask validate %s: %w", id, ErrDatabase)
+	}
+	return t, nil
+}
+
+func (r *sqlTaskRepository) getTaskIsActive(ctx context.Context, id, userID string) (bool, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return false, ErrTaskNotFound
+	}
+
+	var isActive bool
+	err := r.stmtGetTaskIsActive.QueryRowContext(ctx, id, userID).Scan(&isActive)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrTaskNotFound
+		}
+		return false, fmt.Errorf("getTaskIsActive %s: %w", id, ErrDatabase)
+	}
+	return isActive, nil
+}
+
+func (r *sqlTaskRepository) getTaskCategoryID(ctx context.Context, id, userID string) (string, error) {
+	if len(userID) > repoMaxUserIDLength {
+		return "", ErrTaskNotFound
+	}
+
+	var categoryID string
+	err := r.stmtGetTaskCategoryID.QueryRowContext(ctx, id, userID).Scan(&categoryID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrTaskNotFound
+		}
+		return "", fmt.Errorf("getTaskCategoryID %s: %w", id, ErrDatabase)
+	}
+	return categoryID, nil
 }
 
 func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error) {
@@ -517,10 +710,7 @@ func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID, use
 }
 
 func (r *sqlTaskRepository) createSelectOption(ctx context.Context, taskID, value string, position int) (SelectOption, error) {
-	if len(value) > repoMaxOptionValueLength {
-		return SelectOption{}, ErrOptionValueTooLong
-	}
-
+	// Option value length validation is handled at the service layer.
 	var opt SelectOption
 	err := r.stmtCreateSelectOption.QueryRowContext(ctx, taskID, value, position).Scan(
 		&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt,
@@ -572,15 +762,10 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 	schedule *Schedule,
 	selectOptions []SelectOptionRequest,
 ) (WithDetails, error) {
-	// Validate inputs
+	// Defence-in-depth: validate userID length.
+	// Name/description length validation is handled at the service layer.
 	if len(userID) > repoMaxUserIDLength {
 		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions: %w", ErrDatabase)
-	}
-	if len(name) > repoMaxNameLength {
-		return WithDetails{}, ErrNameTooLong
-	}
-	if description != nil && len(*description) > repoMaxDescriptionLength {
-		return WithDetails{}, ErrDescriptionTooLong
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -654,13 +839,10 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 	}
 
 	// Insert select options
+	// Option value length validation is handled at the service layer.
 	if len(selectOptions) > 0 {
 		options := make([]SelectOption, 0, len(selectOptions))
 		for i, opt := range selectOptions {
-			if len(opt.Value) > repoMaxOptionValueLength {
-				return WithDetails{}, ErrOptionValueTooLong
-			}
-
 			var o SelectOption
 			err = tx.QueryRowContext(ctx, queryCreateSelectOption, t.ID, opt.Value, i).Scan(
 				&o.ID, &o.TaskID, &o.Value, &o.Position, &o.CreatedAt,

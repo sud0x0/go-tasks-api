@@ -7,7 +7,24 @@ COMPOSE_FILE=compose.dev.yaml
 DB_CONTAINER=app_db
 APP_CONTAINER=app_api
 
-.PHONY: setup build run stop logs destroy \
+# --- Version metadata ------------------------------------------------
+#
+# Version is bumped manually. Commit SHA and build date are captured at
+# build time. All three are injected into internal/version via -ldflags.
+# The -s -w flags strip debug info and symbol table (standard for release).
+# The -trimpath flag removes local path info for reproducibility.
+#
+VERSION     ?= 0.1.0
+GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+LDFLAGS := -s -w \
+    -X go-tasks-api/internal/version.Version=$(VERSION) \
+    -X go-tasks-api/internal/version.GitCommit=$(GIT_COMMIT) \
+    -X go-tasks-api/internal/version.BuildDate=$(BUILD_DATE)
+# ---------------------------------------------------------------------
+
+.PHONY: setup build build-binary run stop logs destroy clean \
         db-migrate db-reset db-status db-wait \
         test test-pretty \
         lint fmt vet \
@@ -56,6 +73,13 @@ build:
 	@echo "Build complete. Application running at http://localhost:8080"
 	@echo "Use 'make logs' to view application logs."
 
+# Build the API binary with version metadata injected (local/CI builds)
+build-binary:
+	@echo "Building API binary with version $(VERSION)..."
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/api ./cmd/api
+	@echo "Binary built: bin/api"
+	@echo "Run './bin/api --version' to verify."
+
 # Start containers and run migrations
 run:
 	@echo "Starting development environment..."
@@ -78,6 +102,14 @@ destroy:
 	@echo "Pruning dangling images..."
 	@podman image prune -f
 	@echo "Cleanup complete."
+
+# Delete all temp, build, and test folders
+clean:
+	@echo "Cleaning temp, build, and test artifacts..."
+	@rm -rf _tmp_/ tmp/ bin/ _BUILD_/ _test_results_/ keys/
+	@rm -rf .golangci-lint-cache/
+	@rm -f *.out *.coverprofile *.test .env
+	@echo "Clean complete."
 
 # ============================================================================
 # Database
@@ -168,9 +200,11 @@ help:
 	@echo "--------------------"
 	@echo "  setup            First-time setup: copies .env, installs hooks, builds containers"
 	@echo "  build            Build containers and run migrations"
+	@echo "  build-binary     Build the API binary with version metadata injected"
 	@echo "  run              Start containers and run migrations"
 	@echo "  logs             View application logs"
 	@echo "  destroy          Destroy all containers, volumes, and images"
+	@echo "  clean            Delete all temp, build, and test folders"
 	@echo ""
 	@echo "Database"
 	@echo "--------"
@@ -196,4 +230,5 @@ help:
 	@echo "  First time:  make setup"
 	@echo "  Daily:       make run -> make logs"
 	@echo "  Fresh start: make destroy -> make build"
+	@echo "  Tidy up:     make clean"
 	@echo ""

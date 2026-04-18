@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -37,35 +38,42 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// Extract Bearer token from Authorization header
+		// Extract access token from Authorization header.
+		// Must be in format: "Bearer <token>" (case-sensitive, exactly one space).
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			shared.WriteUnauthorised(w, "missing authorization header")
+			writeUnauthorizedJSON(w)
 			return
 		}
 
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			shared.WriteUnauthorised(w, "invalid authorization header format")
+		// Parse Bearer scheme - must start with exact prefix "Bearer " (case-sensitive, one space)
+		const bearerPrefix = "Bearer "
+		if !strings.HasPrefix(authHeader, bearerPrefix) {
+			writeUnauthorizedJSON(w)
 			return
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		// Extract token after the prefix
+		tokenString := authHeader[len(bearerPrefix):]
+
+		// Sanitize (Rule 1: sanitise before validate)
+		tokenString = shared.SanitiseNullBytes(tokenString)
 		if tokenString == "" {
-			shared.WriteUnauthorised(w, "missing token")
+			writeUnauthorizedJSON(w)
+			return
+		}
+
+		// Validate token length (Rule 2: type and validate inputs)
+		// Access tokens are JWTs which should not exceed 4096 bytes
+		if len(tokenString) > 4096 {
+			writeUnauthorizedJSON(w)
 			return
 		}
 
 		// Validate the token
 		userID, jti, _, err := m.service.validateAccessToken(ctx, tokenString)
 		if err != nil {
-			switch err {
-			case ErrTokenRevoked:
-				shared.WriteUnauthorised(w, "token has been revoked")
-			case ErrInvalidToken:
-				shared.WriteUnauthorised(w, "invalid or expired token")
-			default:
-				shared.WriteUnauthorised(w, "authentication failed")
-			}
+			writeUnauthorizedJSON(w)
 			return
 		}
 
@@ -75,6 +83,13 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// writeUnauthorizedJSON writes a 401 Unauthorized JSON response.
+func writeUnauthorizedJSON(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 }
 
 // GetUserID extracts the authenticated user ID from the request context.

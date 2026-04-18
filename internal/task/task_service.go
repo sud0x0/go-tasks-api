@@ -5,6 +5,10 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"go-tasks-api/internal/shared"
+
+	"github.com/google/uuid"
 )
 
 // Field limits.
@@ -14,6 +18,7 @@ const (
 	maxOptionValueLength = 100
 	minSelectOptions     = 2
 	maxSelectOptions     = 10
+	maxBulkIDs           = 100
 )
 
 // timeRegex validates HH:MM format.
@@ -23,9 +28,14 @@ var timeRegex = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):[0-5][0-9]$`)
 type taskService interface {
 	getTask(ctx context.Context, id, userID string) (WithDetails, error)
 	getTasks(ctx context.Context, userID string, categoryID *string, isActive bool, limit, offset int) ([]Task, error)
+	getInactiveTasks(ctx context.Context, userID string, limit, offset int) ([]Task, error)
 	createTask(ctx context.Context, userID string, req CreateTaskRequest) (WithDetails, error)
 	updateTask(ctx context.Context, id, userID string, req UpdateTaskRequest) (Task, error)
 	deleteTask(ctx context.Context, id, userID string) error
+	permanentDeleteTask(ctx context.Context, id, userID string) error
+	bulkDeleteTasks(ctx context.Context, userID string, ids []string) (int, int, error)
+	bulkPermanentDeleteTasks(ctx context.Context, userID string, ids []string) (int, int, error)
+	reactivateTask(ctx context.Context, id, userID string) (Task, error)
 }
 
 // defaultTaskService implements taskService.
@@ -88,16 +98,31 @@ func (s *defaultTaskService) getTasks(ctx context.Context, userID string, catego
 	return s.repo.getTasks(ctx, userID, isActive, limit, offset)
 }
 
+func (s *defaultTaskService) getInactiveTasks(ctx context.Context, userID string, limit, offset int) ([]Task, error) {
+	if userID == "" {
+		return nil, ErrMissingParameters
+	}
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	return s.repo.getInactiveTasks(ctx, userID, limit, offset)
+}
+
 func (s *defaultTaskService) createTask(ctx context.Context, userID string, req CreateTaskRequest) (WithDetails, error) {
 	if userID == "" {
 		return WithDetails{}, ErrMissingParameters
 	}
 
-	// Validate field lengths
-	if len(req.Name) > maxNameLength {
+	// Validate field lengths (rune count for Unicode-aware validation)
+	if shared.RuneCountLen(req.Name) > maxNameLength {
 		return WithDetails{}, ErrNameTooLong
 	}
-	if req.Description != nil && len(*req.Description) > maxDescriptionLength {
+	if req.Description != nil && shared.RuneCountLen(*req.Description) > maxDescriptionLength {
 		return WithDetails{}, ErrDescriptionTooLong
 	}
 
@@ -115,7 +140,7 @@ func (s *defaultTaskService) createTask(ctx context.Context, userID string, req 
 			return WithDetails{}, ErrTooManySelectOptions
 		}
 		for _, opt := range req.SelectOptions {
-			if len(opt.Value) > maxOptionValueLength {
+			if shared.RuneCountLen(opt.Value) > maxOptionValueLength {
 				return WithDetails{}, ErrOptionValueTooLong
 			}
 		}
@@ -156,23 +181,154 @@ func (s *defaultTaskService) updateTask(ctx context.Context, id, userID string, 
 		return Task{}, ErrMissingParameters
 	}
 
-	if len(req.Name) > maxNameLength {
+	if shared.RuneCountLen(req.Name) > maxNameLength {
 		return Task{}, ErrNameTooLong
 	}
-	if req.Description != nil && len(*req.Description) > maxDescriptionLength {
+	if req.Description != nil && shared.RuneCountLen(*req.Description) > maxDescriptionLength {
 		return Task{}, ErrDescriptionTooLong
 	}
 
 	return s.repo.updateTask(ctx, id, userID, req.Name, req.Description)
 }
 
+// deleteTask performs soft-delete only.
+// Returns ErrTaskNotFound if the task does not exist.
+// Returns ErrTaskAlreadyInactive (409) if the task is already inactive.
 func (s *defaultTaskService) deleteTask(ctx context.Context, id, userID string) error {
 	if id == "" || userID == "" {
 		return ErrMissingParameters
 	}
 
-	// Soft delete - just deactivate
+	// Check existence and get current status
+	isActive, err := s.repo.getTaskIsActive(ctx, id, userID)
+	if err != nil {
+		return err // returns ErrTaskNotFound if not found
+	}
+
+	if !isActive {
+		return ErrTaskAlreadyInactive
+	}
+
+	// Soft delete: deactivate the task
 	return s.repo.deactivateTask(ctx, id, userID)
+}
+
+// permanentDeleteTask performs hard-delete on an inactive task.
+// Returns ErrTaskNotFound if the task does not exist.
+// Returns ErrCannotPermanentDeleteActiveTask (409) if the task is still active.
+func (s *defaultTaskService) permanentDeleteTask(ctx context.Context, id, userID string) error {
+	if id == "" || userID == "" {
+		return ErrMissingParameters
+	}
+
+	// Check existence and get current status
+	isActive, err := s.repo.getTaskIsActive(ctx, id, userID)
+	if err != nil {
+		return err // returns ErrTaskNotFound if not found
+	}
+
+	if isActive {
+		return ErrCannotPermanentDeleteActiveTask
+	}
+
+	// Hard delete: task is inactive
+	return s.repo.hardDeleteTask(ctx, id, userID)
+}
+
+// bulkDeleteTasks performs bulk soft-delete only.
+// Inactive IDs in the list are ignored (not hard-deleted).
+// Returns (requested, softDeleted, error) where requested is the pre-dedup input length.
+func (s *defaultTaskService) bulkDeleteTasks(ctx context.Context, userID string, ids []string) (int, int, error) {
+	requested := len(ids)
+	if userID == "" {
+		return 0, 0, ErrMissingParameters
+	}
+	if requested == 0 {
+		return 0, 0, ErrEmptyIDList
+	}
+	if requested > maxBulkIDs {
+		return 0, 0, ErrTooManyIDs
+	}
+
+	// Validate and deduplicate IDs
+	seen := make(map[string]struct{}, len(ids))
+	validIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			return 0, 0, ErrInvalidInput
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			validIDs = append(validIDs, id)
+		}
+	}
+
+	// Soft delete active tasks only
+	softDeleted, err := s.repo.bulkDeactivateTasks(ctx, userID, validIDs)
+	if err != nil {
+		return requested, 0, err
+	}
+
+	return requested, softDeleted, nil
+}
+
+// bulkPermanentDeleteTasks performs bulk hard-delete on inactive tasks only.
+// Active IDs in the list are ignored.
+// Returns (requested, permanentlyDeleted, error) where requested is the pre-dedup input length.
+func (s *defaultTaskService) bulkPermanentDeleteTasks(ctx context.Context, userID string, ids []string) (int, int, error) {
+	requested := len(ids)
+	if userID == "" {
+		return 0, 0, ErrMissingParameters
+	}
+	if requested == 0 {
+		return 0, 0, ErrEmptyIDList
+	}
+	if requested > maxBulkIDs {
+		return 0, 0, ErrTooManyIDs
+	}
+
+	// Validate and deduplicate IDs
+	seen := make(map[string]struct{}, len(ids))
+	validIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := uuid.Parse(id); err != nil {
+			return 0, 0, ErrInvalidInput
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			validIDs = append(validIDs, id)
+		}
+	}
+
+	// Hard delete inactive tasks only
+	permanentlyDeleted, err := s.repo.bulkHardDeleteTasks(ctx, userID, validIDs)
+	if err != nil {
+		return requested, 0, err
+	}
+
+	return requested, permanentlyDeleted, nil
+}
+
+func (s *defaultTaskService) reactivateTask(ctx context.Context, id, userID string) (Task, error) {
+	if id == "" || userID == "" {
+		return Task{}, ErrMissingParameters
+	}
+
+	// Check that the task's category is active
+	categoryID, err := s.repo.getTaskCategoryID(ctx, id, userID)
+	if err != nil {
+		return Task{}, err
+	}
+
+	catActive, err := s.repo.categoryIsActive(ctx, categoryID, userID)
+	if err != nil {
+		return Task{}, err
+	}
+	if !catActive {
+		return Task{}, ErrCategoryInactive
+	}
+
+	return s.repo.reactivateTask(ctx, id, userID)
 }
 
 func (s *defaultTaskService) validateSchedule(sched ScheduleRequest) error {

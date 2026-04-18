@@ -38,18 +38,24 @@ func setupTestStack(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 
 	logger := &mockLogger{}
 
-	// Prepare all statements
-	mock.ExpectPrepare("SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at")
-	mock.ExpectPrepare("SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at")
-	mock.ExpectPrepare("SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at")
-	mock.ExpectPrepare("INSERT INTO tasks")
-	mock.ExpectPrepare("UPDATE tasks SET name =")
-	mock.ExpectPrepare("UPDATE tasks SET is_active =")
-	mock.ExpectPrepare("SELECT EXISTS")
-	mock.ExpectPrepare("INSERT INTO task_schedules")
-	mock.ExpectPrepare("SELECT ts.id, ts.task_id, ts.recurrence_type")
-	mock.ExpectPrepare("INSERT INTO task_select_options")
-	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")
+	// Prepare all statements in order from NewTaskRepository
+	mock.ExpectPrepare("SELECT t.id, t.user_id, t.category_id.*FROM tasks t.*JOIN categories c ON t.category_id = c.id.*WHERE t.id =")                   // getTask
+	mock.ExpectPrepare("SELECT t.id, t.user_id, t.category_id.*FROM tasks t.*JOIN categories c ON t.category_id = c.id.*WHERE t.user_id =.*ORDER BY")    // getTasks
+	mock.ExpectPrepare("SELECT id, user_id, category_id.*FROM tasks WHERE user_id =.*is_active = false")                                                 // getInactiveTasks
+	mock.ExpectPrepare("SELECT t.id, t.user_id, t.category_id.*FROM tasks t.*JOIN categories c ON t.category_id = c.id.*WHERE t.user_id =.*category_id") // getTasksByCategoryID
+	mock.ExpectPrepare("INSERT INTO tasks")                                                                                                              // createTask
+	mock.ExpectPrepare("UPDATE tasks SET name =")                                                                                                        // updateTask
+	mock.ExpectPrepare("UPDATE tasks SET is_active = false")                                                                                             // deactivateTask
+	mock.ExpectPrepare("DELETE FROM tasks WHERE id =")                                                                                                   // hardDeleteTask
+	mock.ExpectPrepare("UPDATE tasks SET is_active = true")                                                                                              // reactivateTask
+	mock.ExpectPrepare("SELECT is_active FROM tasks WHERE id =")                                                                                         // getTaskIsActive
+	mock.ExpectPrepare("SELECT category_id FROM tasks WHERE id =")                                                                                       // getTaskCategoryID
+	mock.ExpectPrepare("SELECT EXISTS.*FROM categories WHERE id =")                                                                                      // checkCategoryExists
+	mock.ExpectPrepare("SELECT is_active FROM categories WHERE id =")                                                                                    // checkCategoryActive
+	mock.ExpectPrepare("INSERT INTO task_schedules")                                                                                                     // createSchedule
+	mock.ExpectPrepare("SELECT ts.id, ts.task_id, ts.recurrence_type")                                                                                   // getScheduleByTaskID
+	mock.ExpectPrepare("INSERT INTO task_select_options")                                                                                                // createSelectOption
+	mock.ExpectPrepare("SELECT tso.id, tso.task_id, tso.value")                                                                                          // getSelectOptionsByTaskID
 
 	repo := NewTaskRepository(db, logger)
 	service := NewTaskService(repo, logger)
@@ -118,7 +124,7 @@ func TestTaskHandler(t *testing.T) {
 
 		fmt.Println("Running Test: Get Task by ID")
 
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT t\.id.*FROM tasks t.*JOIN categories c ON t\.category_id = c\.id.*WHERE t\.id = \$1 AND t\.user_id = \$2 AND c\.is_active = true`).
 			WithArgs(testTaskID, testUserID).
 			WillReturnRows(mockTaskRows().AddRow(
 				testTaskID, testUserID, testCategoryID, "Morning Workout", &description, "boolean", true, now, now,
@@ -167,7 +173,7 @@ func TestTaskHandler(t *testing.T) {
 
 		fmt.Println("Running Test: List Tasks")
 
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE user_id = \$1 AND is_active = \$2 ORDER BY name ASC LIMIT \$3 OFFSET \$4`).
+		mock.ExpectQuery(`SELECT t\.id.*FROM tasks t.*JOIN categories c ON t\.category_id = c\.id.*WHERE t\.user_id = \$1 AND t\.is_active = \$2 AND c\.is_active = true ORDER BY t\.name ASC LIMIT \$3 OFFSET \$4`).
 			WithArgs(testUserID, true, 20, 0).
 			WillReturnRows(mockTaskRows().
 				AddRow(testTaskID, testUserID, testCategoryID, "Morning Workout", nil, "boolean", true, now, now).
@@ -245,14 +251,20 @@ func TestTaskHandler(t *testing.T) {
 		}
 	})
 
-	// TEST 4: DELETE TASK (DEACTIVATE)
-	t.Run("Delete Task", func(t *testing.T) {
+	// TEST 4: DELETE TASK (SOFT DELETE)
+	t.Run("Soft Delete Task", func(t *testing.T) {
 		handler, mock, cleanup := setupTestStack(t)
 		defer cleanup()
 
-		fmt.Println("Running Test: Delete Task")
+		fmt.Println("Running Test: Soft Delete Task")
 
-		mock.ExpectExec(`UPDATE tasks SET is_active = false, updated_at = NOW\(\) WHERE id = \$1 AND user_id = \$2`).
+		// Check is_active status - returns true (active)
+		mock.ExpectQuery(`SELECT is_active FROM tasks WHERE id = \$1 AND user_id = \$2`).
+			WithArgs(testTaskID, testUserID).
+			WillReturnRows(sqlmock.NewRows([]string{"is_active"}).AddRow(true))
+
+		// Deactivate the task
+		mock.ExpectExec(`UPDATE tasks SET is_active = false, updated_at = NOW\(\) WHERE id = \$1 AND user_id = \$2 AND is_active = true`).
 			WithArgs(testTaskID, testUserID).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -265,7 +277,7 @@ func TestTaskHandler(t *testing.T) {
 		if status := rr.Code; status != http.StatusNoContent {
 			t.Errorf("FAIL: Handler returned wrong status code: got %v want %v. Body: %s", status, http.StatusNoContent, rr.Body.String())
 		} else {
-			fmt.Println("PASS: Task deleted successfully")
+			fmt.Println("PASS: Task soft deleted successfully")
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
@@ -281,7 +293,7 @@ func TestTaskHandler(t *testing.T) {
 		fmt.Println("Running Test: Get Non-Existent Task")
 
 		nonExistentID := "00000000-0000-0000-0000-000000000000"
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE id = \$1 AND user_id = \$2`).
+		mock.ExpectQuery(`SELECT t\.id.*FROM tasks t.*JOIN categories c ON t\.category_id = c\.id.*WHERE t\.id = \$1 AND t\.user_id = \$2`).
 			WithArgs(nonExistentID, testUserID).
 			WillReturnRows(mockTaskRows())
 
@@ -400,7 +412,7 @@ func TestTaskHandler(t *testing.T) {
 
 		fmt.Println("Running Test: List Inactive Tasks")
 
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE user_id = \$1 AND is_active = \$2 ORDER BY name ASC LIMIT \$3 OFFSET \$4`).
+		mock.ExpectQuery(`SELECT t\.id.*FROM tasks t.*JOIN categories c ON t\.category_id = c\.id.*WHERE t\.user_id = \$1 AND t\.is_active = \$2 AND c\.is_active = true ORDER BY t\.name ASC LIMIT \$3 OFFSET \$4`).
 			WithArgs(testUserID, false, 20, 0).
 			WillReturnRows(mockTaskRows().
 				AddRow(testTaskID, testUserID, testCategoryID, "Archived Task", nil, "string", false, now, now))
@@ -440,7 +452,7 @@ func TestTaskHandler(t *testing.T) {
 
 		fmt.Println("Running Test: List Tasks By Category")
 
-		mock.ExpectQuery(`SELECT .+ FROM tasks WHERE user_id = \$1 AND category_id = \$2 AND is_active = \$3 ORDER BY name ASC LIMIT \$4 OFFSET \$5`).
+		mock.ExpectQuery(`SELECT t\.id.*FROM tasks t.*JOIN categories c ON t\.category_id = c\.id.*WHERE t\.user_id = \$1 AND t\.category_id = \$2 AND t\.is_active = \$3 AND c\.is_active = true ORDER BY t\.name ASC LIMIT \$4 OFFSET \$5`).
 			WithArgs(testUserID, testCategoryID, true, 20, 0).
 			WillReturnRows(mockTaskRows().
 				AddRow(testTaskID, testUserID, testCategoryID, "Health Task", nil, "boolean", true, now, now))

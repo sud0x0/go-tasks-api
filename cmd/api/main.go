@@ -27,6 +27,14 @@ import (
 )
 
 func main() {
+	// Parse command-line flags. --version / -v prints version info and exits.
+	// Flag parsing is the first action in main so that a version query
+	// never touches config, database, Valkey, or any goroutine.
+	shouldExit, code := handleFlags(os.Args[1:], os.Stdout)
+	if shouldExit {
+		os.Exit(code)
+	}
+
 	// Load configuration from environment variables.
 	cfg, err := config.Load()
 	if err != nil {
@@ -143,7 +151,7 @@ func main() {
 		}
 	}()
 
-	// Auth endpoints — no auth required.
+	// Auth endpoints — no auth middleware required.
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Post("/register", authHandler.Register)
 		r.Post("/login", authHandler.Login)
@@ -159,26 +167,43 @@ func main() {
 		// Category routes.
 		r.Get("/categories", categoryHandler.ListCategories)
 		r.Post("/categories", categoryHandler.CreateCategory)
+		r.Get("/categories/inactive", categoryHandler.ListInactiveCategories)
+		r.Post("/categories/bulk-delete", categoryHandler.BulkDeleteCategories)
+		r.Post("/categories/bulk-permanent-delete", categoryHandler.BulkPermanentDeleteCategories)
 		r.Get("/categories/{id}", categoryHandler.GetCategory)
 		r.Put("/categories/{id}", categoryHandler.UpdateCategory)
 		r.Delete("/categories/{id}", categoryHandler.DeleteCategory)
+		r.Delete("/categories/{id}/permanent", categoryHandler.PermanentDeleteCategory)
+		r.Post("/categories/{id}/reactivate", categoryHandler.ReactivateCategory)
 
 		// Task routes.
 		r.Get("/tasks", taskHandler.ListTasks)
 		r.Post("/tasks", taskHandler.CreateTask)
+		r.Get("/tasks/inactive", taskHandler.ListInactiveTasks)
+		r.Post("/tasks/bulk-delete", taskHandler.BulkDeleteTasks)
+		r.Post("/tasks/bulk-permanent-delete", taskHandler.BulkPermanentDeleteTasks)
 		r.Get("/tasks/{id}", taskHandler.GetTask)
 		r.Put("/tasks/{id}", taskHandler.UpdateTask)
 		r.Delete("/tasks/{id}", taskHandler.DeleteTask)
+		r.Delete("/tasks/{id}/permanent", taskHandler.PermanentDeleteTask)
+		r.Post("/tasks/{id}/reactivate", taskHandler.ReactivateTask)
 
 		// Occurrence routes.
 		r.Get("/occurrences", occurrenceHandler.ListOccurrences)
 		r.Post("/occurrences/{id}/suppress", occurrenceHandler.SuppressOccurrence)
+		r.Post("/occurrences/{id}/unsuppress", occurrenceHandler.UnsuppressOccurrence)
 		r.Post("/occurrences/{id}/answer", occurrenceHandler.SubmitAnswer)
 
 		// Daily log routes.
 		r.Get("/daily-logs", dailylogHandler.ListDailyLogs)
 		r.Post("/daily-logs", dailylogHandler.CreateDailyLog)
+		r.Get("/daily-logs/inactive", dailylogHandler.ListInactiveDailyLogs)
+		r.Post("/daily-logs/bulk-delete", dailylogHandler.BulkDeleteDailyLogs)
+		r.Post("/daily-logs/bulk-permanent-delete", dailylogHandler.BulkPermanentDeleteDailyLogs)
 		r.Put("/daily-logs/{id}", dailylogHandler.UpdateDailyLog)
+		r.Delete("/daily-logs/{id}", dailylogHandler.DeleteDailyLog)
+		r.Delete("/daily-logs/{id}/permanent", dailylogHandler.PermanentDeleteDailyLog)
+		r.Post("/daily-logs/{id}/reactivate", dailylogHandler.ReactivateDailyLog)
 	})
 
 	server := &http.Server{

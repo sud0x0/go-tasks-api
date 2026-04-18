@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html"
 	"net/http"
 	"strings"
 	"time"
@@ -38,10 +37,12 @@ func formatValidationErrors(err error) string {
 		switch e.Tag() {
 		case "required":
 			messages = append(messages, field+" is required")
-		case "min":
+		case "min", "rune_min":
 			messages = append(messages, field+" must be at least "+e.Param()+" characters")
-		case "max":
+		case "max", "rune_max":
 			messages = append(messages, field+" must be at most "+e.Param()+" characters")
+		case "rune_len":
+			messages = append(messages, field+" must be exactly "+e.Param()+" characters")
 		case "email":
 			messages = append(messages, field+" must be a valid email address")
 		default:
@@ -53,52 +54,66 @@ func formatValidationErrors(err error) string {
 
 // NewAuthHandler creates a new Handler.
 func NewAuthHandler(service authService, log authLogger) *Handler {
+	v := validator.New()
+	// Register rune-based length validators for Unicode-aware validation.
+	// This panics on startup if registration fails, which is appropriate
+	// since the handler cannot function correctly without these validators.
+	if err := shared.RegisterRuneLenValidators(v); err != nil {
+		panic("auth: failed to register rune validators: " + err.Error())
+	}
 	return &Handler{
 		service:   service,
 		logger:    log,
-		validate:  validator.New(),
+		validate:  v,
 		sanitiser: bluemonday.StrictPolicy(),
 	}
 }
 
-// sanitise removes HTML tags and null bytes from any user input.
+// sanitise removes HTML tags, null bytes, and unescapes HTML entities.
 func (h *Handler) sanitise(input string) string {
-	return shared.SanitiseNullBytes(html.UnescapeString(h.sanitiser.Sanitize(input)))
+	return shared.SanitiseHTML(h.sanitiser.Sanitize(input))
 }
 
-// handleError maps domain errors to HTTP responses.
+// handleError maps domain errors to HTTP responses (JSON format).
 func (h *Handler) handleError(ctx context.Context, w http.ResponseWriter, err error) {
 	log := logger.FromContext(ctx, h.logger)
 
 	switch {
 	case errors.Is(err, ErrDatabase):
 		log.LogError(ErrDatabase, err)
-		http.Error(w, "database error occurred", http.StatusInternalServerError)
+		shared.WriteErrorJSON(w, "database error occurred", http.StatusInternalServerError)
 	case errors.Is(err, ErrUserExists):
-		http.Error(w, "username already exists", http.StatusConflict)
+		shared.WriteErrorJSON(w, "username already exists", http.StatusConflict)
 	case errors.Is(err, ErrInvalidCredentials):
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		shared.WriteErrorJSON(w, "invalid credentials", http.StatusUnauthorized)
 	case errors.Is(err, ErrInvalidToken):
-		http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+		shared.WriteErrorJSON(w, "invalid or expired token", http.StatusUnauthorized)
 	case errors.Is(err, ErrTokenRevoked):
-		http.Error(w, "token has been revoked", http.StatusUnauthorized)
+		shared.WriteErrorJSON(w, "token has been revoked", http.StatusUnauthorized)
+	case errors.Is(err, ErrTokenOwnershipMismatch):
+		shared.WriteUnauthorised(w)
+	case errors.Is(err, ErrValkeyUnavailable):
+		log.LogError(ErrValkeyUnavailable, err)
+		shared.WriteErrorJSON(w, "service temporarily unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, ErrUsernameTooLong):
-		http.Error(w, "username exceeds maximum of 50 characters", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "username exceeds maximum of 50 characters", http.StatusBadRequest)
 	case errors.Is(err, ErrPasswordTooLong):
-		http.Error(w, "password exceeds maximum of 72 characters", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "password exceeds maximum of 128 characters", http.StatusBadRequest)
 	case errors.Is(err, ErrPasswordTooShort):
-		http.Error(w, "password must be at least 8 characters", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "password must be at least 8 characters", http.StatusBadRequest)
+	case errors.Is(err, ErrPasswordInvalidChars):
+		shared.WriteErrorJSON(w, "password contains invalid control characters", http.StatusBadRequest)
 	case errors.Is(err, ErrInvalidUsername):
-		http.Error(w, "username cannot be empty or whitespace", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "username cannot be empty or whitespace", http.StatusBadRequest)
 	case errors.Is(err, ErrMissingParameters):
-		http.Error(w, "missing required parameters", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "missing required parameters", http.StatusBadRequest)
 	case errors.Is(err, ErrValidation):
-		http.Error(w, "validation error", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "validation error", http.StatusBadRequest)
 	case errors.Is(err, ErrInvalidReqBody):
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		shared.WriteErrorJSON(w, "invalid request body", http.StatusBadRequest)
 	default:
 		log.LogError(ErrInternalServer, err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		shared.WriteErrorJSON(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
@@ -129,10 +144,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Sanitise all fields before validation
 	req.Username = h.sanitise(req.Username)
-	// Note: Do NOT sanitise password - it may legitimately contain special characters
+	// SECURITY: Do NOT sanitise password - bluemonday would mangle legitimate input
+	// and HTML-unescape could change the password. Control character validation
+	// is handled separately in the service layer.
 
 	if err := h.validate.Struct(req); err != nil {
-		http.Error(w, formatValidationErrors(err), http.StatusBadRequest)
+		shared.WriteErrorJSON(w, formatValidationErrors(err), http.StatusBadRequest)
 		return
 	}
 
@@ -149,6 +166,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 // Login handles POST /api/v1/auth/login.
+// Returns user info and tokens in the response body.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -159,14 +177,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sanitise username only - not password
+	// SECURITY: Do NOT sanitise password - bluemonday would mangle legitimate input
+	// and HTML-unescape could change the password. Control character validation
+	// is handled separately in the service layer.
 	req.Username = h.sanitise(req.Username)
 
 	if err := h.validate.Struct(req); err != nil {
-		http.Error(w, formatValidationErrors(err), http.StatusBadRequest)
+		shared.WriteErrorJSON(w, formatValidationErrors(err), http.StatusBadRequest)
 		return
 	}
 
-	tokens, err := h.service.login(ctx, req)
+	// Login and get tokens + user
+	tokens, user, err := h.service.loginWithUser(ctx, req)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
 			log := logger.FromContext(ctx, h.logger)
@@ -179,28 +201,55 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	log := logger.FromContext(ctx, h.logger)
 	log.LogInfo("login succeeded", "username", req.Username)
 
-	h.responseJSON(ctx, w, tokens, http.StatusOK)
+	// Calculate expires_at from ExpiresIn (15 min = 900 seconds)
+	expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+
+	// Return user info and tokens in body
+	h.responseJSON(ctx, w, LoginResponse{
+		User:         user.ToResponse(),
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    expiresAt,
+		TokenType:    tokens.TokenType,
+	}, http.StatusOK)
 }
 
 // Refresh handles POST /api/v1/auth/refresh.
+// Reads refresh token from X-Refresh-Token header, rotates tokens, returns new tokens in body.
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req RefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.handleError(ctx, w, ErrInvalidReqBody)
+	// Read refresh token from X-Refresh-Token header
+	refreshToken := r.Header.Get("X-Refresh-Token")
+	if refreshToken == "" {
+		h.handleError(ctx, w, ErrInvalidToken)
 		return
 	}
 
-	// Sanitise all fields before validation
-	req.RefreshToken = h.sanitise(req.RefreshToken)
-
-	if err := h.validate.Struct(req); err != nil {
-		http.Error(w, formatValidationErrors(err), http.StatusBadRequest)
+	// Sanitise the refresh token (Rule 1: sanitise before validate)
+	refreshToken = h.sanitise(refreshToken)
+	if refreshToken == "" {
+		h.handleError(ctx, w, ErrInvalidToken)
 		return
 	}
 
-	tokens, err := h.service.refresh(ctx, req.RefreshToken)
+	// Validate refresh token format (Rule 2: type and validate inputs)
+	// Refresh token is 32 bytes base64url encoded = 43 characters
+	if len(refreshToken) > 64 {
+		h.handleError(ctx, w, ErrInvalidToken)
+		return
+	}
+
+	// Extract old access token from Authorization header (if provided) to blocklist its JTI
+	var oldAccessToken string
+	authHeader := r.Header.Get("Authorization")
+	const bearerPrefix = "Bearer "
+	if strings.HasPrefix(authHeader, bearerPrefix) {
+		oldAccessToken = h.sanitise(authHeader[len(bearerPrefix):])
+	}
+
+	// Perform token rotation
+	tokens, err := h.service.refresh(ctx, refreshToken, oldAccessToken)
 	if err != nil {
 		h.handleError(ctx, w, err)
 		return
@@ -209,46 +258,77 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	log := logger.FromContext(ctx, h.logger)
 	log.LogInfo("token refreshed")
 
-	h.responseJSON(ctx, w, tokens, http.StatusOK)
+	// Calculate expires_at from ExpiresIn
+	expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+
+	// Return new tokens in body
+	h.responseJSON(ctx, w, RefreshResponse{
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    expiresAt,
+		TokenType:    tokens.TokenType,
+	}, http.StatusOK)
 }
 
 // Logout handles POST /api/v1/auth/logout.
+// Reads tokens from headers, verifies ownership, revokes tokens, returns 204 No Content.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
-	var req LogoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.handleError(ctx, w, ErrInvalidReqBody)
-		return
-	}
-
-	// Sanitise all fields before validation
-	req.RefreshToken = h.sanitise(req.RefreshToken)
-
-	if err := h.validate.Struct(req); err != nil {
-		http.Error(w, formatValidationErrors(err), http.StatusBadRequest)
-		return
-	}
-
-	// Extract jti and exp from access token if present in Authorization header
-	var jti string
-	var tokenExp time.Time
-	authHeader := r.Header.Get("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		// Try to extract jti and exp even if token is expired/invalid
-		_, extractedJti, extractedExp, _ := h.service.validateAccessToken(ctx, tokenString)
-		jti = extractedJti
-		tokenExp = extractedExp
-	}
-
-	if err := h.service.logout(ctx, req.RefreshToken, jti, tokenExp); err != nil {
-		h.handleError(ctx, w, err)
-		return
-	}
-
 	log := logger.FromContext(ctx, h.logger)
-	log.LogInfo("logout succeeded")
 
+	// Read refresh token from X-Refresh-Token header
+	refreshToken := r.Header.Get("X-Refresh-Token")
+	if refreshToken == "" {
+		// No refresh token - just return 204 (no-op)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Sanitise the refresh token (Rule 1: sanitise before validate)
+	refreshToken = h.sanitise(refreshToken)
+	if refreshToken == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Read access token from Authorization header
+	authHeader := r.Header.Get("Authorization")
+	var userID, jti string
+	var tokenExp time.Time
+
+	const bearerPrefix = "Bearer "
+	if strings.HasPrefix(authHeader, bearerPrefix) {
+		accessToken := authHeader[len(bearerPrefix):]
+		accessToken = h.sanitise(accessToken)
+		// Extract user ID, JTI, and expiration from access token
+		userID, jti, tokenExp, _ = h.service.validateAccessToken(ctx, accessToken)
+	}
+
+	// If we have a valid userID, perform ownership-verified logout
+	if userID != "" {
+		tokenHash := hashRefreshToken(refreshToken)
+		if err := h.service.logoutWithOwnershipCheck(ctx, tokenHash, userID, jti, tokenExp); err != nil {
+			if errors.Is(err, ErrTokenOwnershipMismatch) {
+				// Token doesn't belong to this user - this is a security concern
+				log.LogInfo("logout ownership mismatch", "user_id", userID)
+				shared.WriteUnauthorised(w)
+				return
+			}
+			// Log other errors but still continue
+			log.LogInfo("logout error", "error", err.Error())
+		}
+	} else {
+		// No valid access token, but we have a refresh token - try to delete it anyway
+		tokenHash := hashRefreshToken(refreshToken)
+		_ = h.service.logout(ctx, refreshToken, "", time.Time{})
+		// Also try to blocklist any jti we might have
+		if jti != "" {
+			_ = h.service.blocklistJTI(ctx, jti, tokenExp)
+		}
+		// This path ignores errors since we can't verify ownership
+		log.LogInfo("logout without valid access token", "token_hash_prefix", tokenHash[:8])
+	}
+
+	log.LogInfo("logout succeeded")
 	w.WriteHeader(http.StatusNoContent)
 }

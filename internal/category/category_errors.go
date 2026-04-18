@@ -35,12 +35,36 @@ var (
 	// ErrUnauthorised indicates an unauthorised access attempt.
 	ErrUnauthorised = errors.New("unauthorised access")
 
-	// ErrCategoryInUse indicates the category is being used by active tasks.
-	ErrCategoryInUse = errors.New("category is in use by active tasks")
-
 	// ErrNameTooLong indicates the name exceeds the maximum length.
 	ErrNameTooLong = errors.New("name exceeds maximum of 100 characters")
 
 	// ErrDescriptionTooLong indicates the description exceeds the maximum length.
 	ErrDescriptionTooLong = errors.New("description exceeds maximum of 500 characters")
+
+	// ErrDuplicateName indicates a category with this name already exists for the user.
+	ErrDuplicateName = errors.New("category with this name already exists")
+
+	// ErrInvalidColour indicates the colour format is invalid.
+	ErrInvalidColour = errors.New("invalid colour: must be in the form #RRGGBB")
+
+	// ErrTooManyIDs indicates too many IDs were provided for bulk operation.
+	ErrTooManyIDs = errors.New("too many IDs: maximum 100 allowed")
+
+	// ErrEmptyIDList indicates an empty ID list was provided.
+	ErrEmptyIDList = errors.New("at least one ID is required")
+
+	// ErrCategoryAlreadyActive indicates the category is already active.
+	ErrCategoryAlreadyActive = errors.New("category is already active")
+
+	// ErrCategoryAlreadyInactive indicates the category is already inactive.
+	ErrCategoryAlreadyInactive = errors.New("category is already inactive")
+
+	// ErrReactivateNameCollision indicates reactivation would cause a duplicate name.
+	ErrReactivateNameCollision = errors.New("cannot reactivate: another active category has this name")
+
+	// ErrCannotPermanentDeleteActive indicates an attempt to permanently delete an active category.
+	ErrCannotPermanentDeleteActive = errors.New("cannot permanently delete an active category; deactivate it first")
+
+	// ErrCategoryHasActiveTasks indicates the category cannot be deleted because it has active tasks.
+	ErrCategoryHasActiveTasks = errors.New("category has active tasks")
 )

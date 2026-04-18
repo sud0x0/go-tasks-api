@@ -88,7 +88,7 @@ type WithDetails struct {
 
 // AnswerRequest is used for submitting an answer.
 type AnswerRequest struct {
-	AnswerString  *string `json:"answer_string"  validate:"omitempty,max=500"`
+	AnswerString  *string `json:"answer_string"  validate:"omitempty,rune_max=500"`
 	AnswerInteger *int    `json:"answer_integer"`
 	AnswerBoolean *bool   `json:"answer_boolean"`
 	AnswerSelect  *string `json:"answer_select"`

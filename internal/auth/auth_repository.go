@@ -24,6 +24,7 @@ const (
 	queryCreateToken        = `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3) RETURNING id, user_id, token_hash, expires_at, created_at` //nolint:gosec // SQL query, not a credential
 	queryGetTokenByHash     = `SELECT id, user_id, token_hash, expires_at, created_at FROM refresh_tokens WHERE token_hash = $1`                                           //nolint:gosec // SQL query, not a credential
 	queryDeleteToken        = `DELETE FROM refresh_tokens WHERE token_hash = $1`                                                                                           //nolint:gosec // SQL query, not a credential
+	queryDeleteTokenForUser = `DELETE FROM refresh_tokens WHERE token_hash = $1 AND user_id = $2`                                                                          //nolint:gosec // SQL query, not a credential
 	queryDeleteUserTokens   = `DELETE FROM refresh_tokens WHERE user_id = $1`                                                                                              //nolint:gosec // SQL query, not a credential
 	queryCleanExpiredTokens = `DELETE FROM refresh_tokens WHERE expires_at < NOW()`                                                                                        //nolint:gosec // SQL query, not a credential
 )
@@ -36,6 +37,7 @@ type authRepository interface {
 	createRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) (RefreshToken, error)
 	getRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	deleteRefreshToken(ctx context.Context, tokenHash string) error
+	deleteRefreshTokenForUser(ctx context.Context, tokenHash, userID string) error
 	deleteUserRefreshTokens(ctx context.Context, userID string) error
 	CleanExpiredTokens(ctx context.Context) error
 	Close() error
@@ -49,6 +51,7 @@ type sqlAuthRepository struct {
 	stmtCreateToken        *sql.Stmt
 	stmtGetTokenByHash     *sql.Stmt
 	stmtDeleteToken        *sql.Stmt
+	stmtDeleteTokenForUser *sql.Stmt
 	stmtDeleteUserTokens   *sql.Stmt
 	stmtCleanExpiredTokens *sql.Stmt
 }
@@ -90,6 +93,11 @@ func NewAuthRepository(db *sql.DB, _ authLogger) authRepository {
 		panic(fmt.Sprintf("auth_repository: failed to prepare deleteToken: %v", err))
 	}
 
+	repo.stmtDeleteTokenForUser, err = db.Prepare(queryDeleteTokenForUser)
+	if err != nil {
+		panic(fmt.Sprintf("auth_repository: failed to prepare deleteTokenForUser: %v", err))
+	}
+
 	repo.stmtDeleteUserTokens, err = db.Prepare(queryDeleteUserTokens)
 	if err != nil {
 		panic(fmt.Sprintf("auth_repository: failed to prepare deleteUserTokens: %v", err))
@@ -113,6 +121,7 @@ func (r *sqlAuthRepository) Close() error {
 		r.stmtCreateToken,
 		r.stmtGetTokenByHash,
 		r.stmtDeleteToken,
+		r.stmtDeleteTokenForUser,
 		r.stmtDeleteUserTokens,
 		r.stmtCleanExpiredTokens,
 	} {
@@ -244,6 +253,31 @@ func (r *sqlAuthRepository) deleteRefreshToken(ctx context.Context, tokenHash st
 	if err != nil {
 		return fmt.Errorf("deleteRefreshToken: %w", ErrDatabase)
 	}
+	return nil
+}
+
+// deleteRefreshTokenForUser deletes a refresh token only if it belongs to the specified user.
+// Returns ErrTokenOwnershipMismatch if the token doesn't exist or doesn't belong to the user.
+func (r *sqlAuthRepository) deleteRefreshTokenForUser(ctx context.Context, tokenHash, userID string) error {
+	if len(tokenHash) > repoMaxTokenHashLength {
+		return ErrTokenOwnershipMismatch
+	}
+
+	result, err := r.stmtDeleteTokenForUser.ExecContext(ctx, tokenHash, userID)
+	if err != nil {
+		return fmt.Errorf("deleteRefreshTokenForUser: %w", ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("deleteRefreshTokenForUser rows: %w", ErrDatabase)
+	}
+
+	if rowsAffected == 0 {
+		// Token doesn't exist or doesn't belong to this user
+		return ErrTokenOwnershipMismatch
+	}
+
 	return nil
 }
 

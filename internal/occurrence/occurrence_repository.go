@@ -13,9 +13,10 @@ import (
 )
 
 // Repository size limits (defence-in-depth validation).
+// Answer string length validation is handled at the service layer using rune count
+// to match PostgreSQL VARCHAR(n) character semantics.
 const (
-	repoMaxUserIDLength       = 64
-	repoMaxAnswerStringLength = 500
+	repoMaxUserIDLength = 64
 )
 
 // parseInt64Array parses a PostgreSQL array literal string to []int64.
@@ -77,24 +78,34 @@ func parseTimeStr(timeStr string, baseDate time.Time) *time.Time {
 
 // Prepared statement queries.
 const (
-	queryGetOccurrence = `SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at
-		FROM task_occurrences WHERE id = $1 AND user_id = $2`
-	queryGetOccurrencesByDate = `SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at
-		FROM task_occurrences WHERE user_id = $1 AND occurrence_date = $2 ORDER BY scheduled_time NULLS LAST`
-	queryGetOccurrencesByDateRange = `SELECT id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at
-		FROM task_occurrences WHERE user_id = $1 AND occurrence_date >= $2 AND occurrence_date <= $3
-		ORDER BY occurrence_date, scheduled_time NULLS LAST`
+	queryGetOccurrence = `SELECT o.id, o.task_id, o.schedule_id, o.user_id, o.occurrence_date, o.scheduled_time, o.is_suppressed, o.created_at
+		FROM task_occurrences o
+		JOIN tasks t ON o.task_id = t.id
+		JOIN categories c ON t.category_id = c.id
+		WHERE o.id = $1 AND o.user_id = $2 AND t.is_active = true AND c.is_active = true`
+	queryGetOccurrencesByDate = `SELECT o.id, o.task_id, o.schedule_id, o.user_id, o.occurrence_date, o.scheduled_time, o.is_suppressed, o.created_at
+		FROM task_occurrences o
+		JOIN tasks t ON o.task_id = t.id
+		JOIN categories c ON t.category_id = c.id
+		WHERE o.user_id = $1 AND o.occurrence_date = $2 AND t.is_active = true AND c.is_active = true ORDER BY o.scheduled_time NULLS LAST`
+	queryGetOccurrencesByDateRange = `SELECT o.id, o.task_id, o.schedule_id, o.user_id, o.occurrence_date, o.scheduled_time, o.is_suppressed, o.created_at
+		FROM task_occurrences o
+		JOIN tasks t ON o.task_id = t.id
+		JOIN categories c ON t.category_id = c.id
+		WHERE o.user_id = $1 AND o.occurrence_date >= $2 AND o.occurrence_date <= $3 AND t.is_active = true AND c.is_active = true
+		ORDER BY o.occurrence_date, o.scheduled_time NULLS LAST`
 	queryUpsertTimedOccurrence = `INSERT INTO task_occurrences (task_id, schedule_id, user_id, occurrence_date, scheduled_time)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (schedule_id, occurrence_date, scheduled_time) WHERE scheduled_time IS NOT NULL
-		DO UPDATE SET task_id = EXCLUDED.task_id
+		ON CONFLICT (task_id, occurrence_date, scheduled_time) WHERE scheduled_time IS NOT NULL
+		DO UPDATE SET schedule_id = EXCLUDED.schedule_id
 		RETURNING id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at`
 	queryUpsertUntimedOccurrence = `INSERT INTO task_occurrences (task_id, schedule_id, user_id, occurrence_date, scheduled_time)
 		VALUES ($1, $2, $3, $4, NULL)
-		ON CONFLICT (schedule_id, occurrence_date) WHERE scheduled_time IS NULL
-		DO UPDATE SET task_id = EXCLUDED.task_id
+		ON CONFLICT (task_id, occurrence_date) WHERE scheduled_time IS NULL
+		DO UPDATE SET schedule_id = EXCLUDED.schedule_id
 		RETURNING id, task_id, schedule_id, user_id, occurrence_date, scheduled_time, is_suppressed, created_at`
-	querySuppressOccurrence = `UPDATE task_occurrences SET is_suppressed = true WHERE id = $1 AND user_id = $2`
+	querySuppressOccurrence   = `UPDATE task_occurrences SET is_suppressed = true WHERE id = $1 AND user_id = $2`
+	queryUnsuppressOccurrence = `UPDATE task_occurrences SET is_suppressed = false WHERE id = $1 AND user_id = $2`
 
 	queryGetAnswer = `SELECT id, occurrence_id, user_id, answer_string, answer_integer, answer_boolean, answer_select, answered_at, created_at, updated_at
 		FROM task_answers WHERE occurrence_id = $1 AND user_id = $2`
@@ -109,14 +120,17 @@ const (
 			updated_at = NOW()
 		RETURNING id, occurrence_id, user_id, answer_string, answer_integer, answer_boolean, answer_select, answered_at, created_at, updated_at`
 
-	queryGetTask = `SELECT id, user_id, category_id, name, description, answer_type, is_active, created_at, updated_at
-		FROM tasks WHERE id = $1 AND user_id = $2`
+	queryGetTask = `SELECT t.id, t.user_id, t.category_id, t.name, t.description, t.answer_type, t.is_active, t.created_at, t.updated_at
+		FROM tasks t
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.id = $1 AND t.user_id = $2 AND t.is_active = true AND c.is_active = true`
 	queryGetActiveSchedulesByDate = `SELECT ts.id, ts.task_id, ts.recurrence_type, ts.recurrence_interval, ts.days_of_week,
 		ts.month_day, ts.month_week, ts.month_weekday, ts.month_of_year, ts.scheduled_times, ts.start_date,
 		ts.end_type, ts.end_date, ts.end_after_n, ts.created_at
 		FROM task_schedules ts
 		JOIN tasks t ON ts.task_id = t.id
-		WHERE t.user_id = $1 AND t.is_active = true AND ts.start_date <= $2
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.user_id = $1 AND t.is_active = true AND c.is_active = true AND ts.start_date <= $2
 		AND (ts.end_type = 'never' OR (ts.end_type = 'on_date' AND ts.end_date >= $2) OR ts.end_type = 'after_n')`
 	queryGetSelectOptions        = `SELECT tso.id, tso.task_id, tso.value, tso.position, tso.created_at FROM task_select_options tso JOIN tasks t ON tso.task_id = t.id WHERE tso.task_id = $1 AND t.user_id = $2 ORDER BY tso.position`
 	queryCheckSelectOptionExists = `SELECT EXISTS(SELECT 1 FROM task_select_options tso JOIN tasks t ON tso.task_id = t.id WHERE tso.id = $1 AND tso.task_id = $2 AND t.user_id = $3)`
@@ -130,6 +144,7 @@ type occurrenceRepository interface {
 	getOccurrencesByDateRange(ctx context.Context, userID string, startDate, endDate time.Time) ([]TaskOccurrence, error)
 	upsertOccurrence(ctx context.Context, taskID, scheduleID, userID string, date time.Time, scheduledTime *time.Time) (TaskOccurrence, error)
 	suppressOccurrence(ctx context.Context, id, userID string) error
+	unsuppressOccurrence(ctx context.Context, id, userID string) error
 	countOccurrences(ctx context.Context, scheduleID, userID string) (int, error)
 
 	getAnswer(ctx context.Context, occurrenceID, userID string) (*TaskAnswer, error)
@@ -154,6 +169,7 @@ type sqlOccurrenceRepository struct {
 	stmtUpsertTimedOccurrence   *sql.Stmt
 	stmtUpsertUntimedOccurrence *sql.Stmt
 	stmtSuppressOccurrence      *sql.Stmt
+	stmtUnsuppressOccurrence    *sql.Stmt
 	stmtCountOccurrences        *sql.Stmt
 	stmtGetAnswer               *sql.Stmt
 	stmtUpsertAnswer            *sql.Stmt
@@ -197,6 +213,11 @@ func NewOccurrenceRepository(db *sql.DB, _ occurrenceLogger) occurrenceRepositor
 	repo.stmtSuppressOccurrence, err = db.Prepare(querySuppressOccurrence)
 	if err != nil {
 		panic(fmt.Sprintf("occurrence_repository: failed to prepare suppressOccurrence: %v", err))
+	}
+
+	repo.stmtUnsuppressOccurrence, err = db.Prepare(queryUnsuppressOccurrence)
+	if err != nil {
+		panic(fmt.Sprintf("occurrence_repository: failed to prepare unsuppressOccurrence: %v", err))
 	}
 
 	repo.stmtCountOccurrences, err = db.Prepare(queryCountOccurrences)
@@ -247,6 +268,7 @@ func (r *sqlOccurrenceRepository) Close() error {
 		r.stmtUpsertTimedOccurrence,
 		r.stmtUpsertUntimedOccurrence,
 		r.stmtSuppressOccurrence,
+		r.stmtUnsuppressOccurrence,
 		r.stmtCountOccurrences,
 		r.stmtGetAnswer,
 		r.stmtUpsertAnswer,
@@ -402,6 +424,23 @@ func (r *sqlOccurrenceRepository) suppressOccurrence(ctx context.Context, id, us
 	return nil
 }
 
+func (r *sqlOccurrenceRepository) unsuppressOccurrence(ctx context.Context, id, userID string) error {
+	result, err := r.stmtUnsuppressOccurrence.ExecContext(ctx, id, userID)
+	if err != nil {
+		return fmt.Errorf("unsuppressOccurrence %s: %w", id, ErrDatabase)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("unsuppressOccurrence rowsAffected %s: %w", id, ErrDatabase)
+	}
+
+	if rowsAffected == 0 {
+		return ErrOccurrenceNotFound
+	}
+	return nil
+}
+
 func (r *sqlOccurrenceRepository) countOccurrences(ctx context.Context, scheduleID, userID string) (int, error) {
 	var count int
 	err := r.stmtCountOccurrences.QueryRowContext(ctx, scheduleID, userID).Scan(&count)
@@ -431,10 +470,7 @@ func (r *sqlOccurrenceRepository) getAnswer(ctx context.Context, occurrenceID, u
 }
 
 func (r *sqlOccurrenceRepository) upsertAnswer(ctx context.Context, occurrenceID, userID string, answer AnswerRequest) (TaskAnswer, error) {
-	if answer.AnswerString != nil && len(*answer.AnswerString) > repoMaxAnswerStringLength {
-		return TaskAnswer{}, ErrAnswerStringTooLong
-	}
-
+	// Answer string length validation is handled at the service layer.
 	var a TaskAnswer
 	err := r.stmtUpsertAnswer.QueryRowContext(ctx,
 		occurrenceID, userID,
@@ -598,7 +634,8 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesForRange(ctx context.Context
 		ts.end_type, ts.end_date, ts.end_after_n, ts.created_at
 		FROM task_schedules ts
 		JOIN tasks t ON ts.task_id = t.id
-		WHERE t.user_id = $1 AND t.is_active = true AND ts.start_date <= $3
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.user_id = $1 AND t.is_active = true AND c.is_active = true AND ts.start_date <= $3
 		AND (ts.end_type = 'never' OR (ts.end_type = 'on_date' AND ts.end_date >= $2) OR ts.end_type = 'after_n')`
 
 	rows, err := r.db.QueryContext(ctx, query, userID, startDate, endDate)

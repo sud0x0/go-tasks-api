@@ -19,6 +19,7 @@ type occurrenceService interface {
 	getOccurrencesByDate(ctx context.Context, userID string, date time.Time) ([]WithDetails, error)
 	getOccurrencesByDateRange(ctx context.Context, userID string, startDate, endDate time.Time) ([]WithDetails, error)
 	suppressOccurrence(ctx context.Context, id, userID string) error
+	unsuppressOccurrence(ctx context.Context, id, userID string) error
 	submitAnswer(ctx context.Context, id, userID string, req AnswerRequest) (TaskAnswer, error)
 }
 
@@ -201,13 +202,31 @@ func (s *defaultOccurrenceService) suppressOccurrence(ctx context.Context, id, u
 	return s.repo.suppressOccurrence(ctx, id, userID)
 }
 
+func (s *defaultOccurrenceService) unsuppressOccurrence(ctx context.Context, id, userID string) error {
+	if id == "" || userID == "" {
+		return ErrMissingParameters
+	}
+
+	// Verify occurrence exists and belongs to user
+	occ, err := s.repo.getOccurrence(ctx, id, userID)
+	if err != nil {
+		return err
+	}
+
+	if !occ.IsSuppressed {
+		return ErrOccurrenceNotSuppressed
+	}
+
+	return s.repo.unsuppressOccurrence(ctx, id, userID)
+}
+
 func (s *defaultOccurrenceService) submitAnswer(ctx context.Context, id, userID string, req AnswerRequest) (TaskAnswer, error) {
 	if id == "" || userID == "" {
 		return TaskAnswer{}, ErrMissingParameters
 	}
 
-	// Validate answer string length
-	if req.AnswerString != nil && len(*req.AnswerString) > maxAnswerStringLength {
+	// Validate answer string length (rune count for Unicode-aware validation)
+	if req.AnswerString != nil && shared.RuneCountLen(*req.AnswerString) > maxAnswerStringLength {
 		return TaskAnswer{}, ErrAnswerStringTooLong
 	}
 
@@ -215,6 +234,11 @@ func (s *defaultOccurrenceService) submitAnswer(ctx context.Context, id, userID 
 	occ, err := s.repo.getOccurrence(ctx, id, userID)
 	if err != nil {
 		return TaskAnswer{}, err
+	}
+
+	// Reject answers to suppressed occurrences
+	if occ.IsSuppressed {
+		return TaskAnswer{}, ErrOccurrenceIsSuppressed
 	}
 
 	// Get the task to verify answer type

@@ -94,4 +94,22 @@ var (
 
 	// ErrMissingEndAfterN indicates end_after_n is required but missing.
 	ErrMissingEndAfterN = errors.New("end_after_n required for end_type 'after_n'")
+
+	// ErrTooManyIDs indicates too many IDs were provided for bulk operation.
+	ErrTooManyIDs = errors.New("too many IDs: maximum 100 allowed")
+
+	// ErrEmptyIDList indicates an empty ID list was provided.
+	ErrEmptyIDList = errors.New("at least one ID is required")
+
+	// ErrTaskAlreadyActive indicates the task is already active.
+	ErrTaskAlreadyActive = errors.New("task is already active")
+
+	// ErrTaskAlreadyInactive indicates the task is already inactive.
+	ErrTaskAlreadyInactive = errors.New("task is already inactive")
+
+	// ErrCategoryInactive indicates the task's category is inactive.
+	ErrCategoryInactive = errors.New("cannot reactivate: category is inactive")
+
+	// ErrCannotPermanentDeleteActiveTask indicates an attempt to permanently delete an active task.
+	ErrCannotPermanentDeleteActiveTask = errors.New("cannot permanently delete an active task; deactivate it first")
 )

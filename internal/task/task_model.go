@@ -183,8 +183,8 @@ type WithDetails struct {
 // CreateTaskRequest is used for creating a task.
 type CreateTaskRequest struct {
 	CategoryID    string                `json:"category_id"    validate:"required"`
-	Name          string                `json:"name"           validate:"required,max=200"`
-	Description   *string               `json:"description"    validate:"omitempty,max=1000"`
+	Name          string                `json:"name"           validate:"required,rune_max=200"`
+	Description   *string               `json:"description"    validate:"omitempty,rune_max=1000"`
 	AnswerType    string                `json:"answer_type"    validate:"required"`
 	Schedule      ScheduleRequest       `json:"schedule"       validate:"required"`
 	SelectOptions []SelectOptionRequest `json:"select_options" validate:"omitempty,min=2,max=10,dive"`
@@ -208,11 +208,28 @@ type ScheduleRequest struct {
 
 // SelectOptionRequest is used for creating a select option.
 type SelectOptionRequest struct {
-	Value string `json:"value" validate:"required,max=100"`
+	Value string `json:"value" validate:"required,rune_max=100"`
 }
 
 // UpdateTaskRequest is used for updating a task.
 type UpdateTaskRequest struct {
-	Name        string  `json:"name"        validate:"required,max=200"`
-	Description *string `json:"description" validate:"omitempty,max=1000"`
+	Name        string  `json:"name"        validate:"required,rune_max=200"`
+	Description *string `json:"description" validate:"omitempty,rune_max=1000"`
+}
+
+// BulkDeleteRequest is used for bulk deleting tasks.
+type BulkDeleteRequest struct {
+	IDs []string `json:"ids" validate:"required,min=1,max=100,dive,required"`
+}
+
+// BulkDeleteResponse is the response for bulk soft-delete operations.
+type BulkDeleteResponse struct {
+	Requested   int `json:"requested"`
+	SoftDeleted int `json:"soft_deleted"`
+}
+
+// BulkPermanentDeleteResponse is the response for bulk permanent-delete operations.
+type BulkPermanentDeleteResponse struct {
+	Requested          int `json:"requested"`
+	PermanentlyDeleted int `json:"permanently_deleted"`
 }

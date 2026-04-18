@@ -79,9 +79,11 @@ func (rt *RefreshToken) Validate() error {
 }
 
 // RegisterRequest is used for user registration.
+// Password length validation (8-128 code points) is performed in the service layer
+// after NFKC normalization, not by the validator.
 type RegisterRequest struct {
 	Username string `json:"username" validate:"required,min=3,max=50"`
-	Password string `json:"password" validate:"required,min=8,max=72"`
+	Password string `json:"password" validate:"required"`
 }
 
 // LoginRequest is used for user login.
@@ -90,22 +92,32 @@ type LoginRequest struct {
 	Password string `json:"password" validate:"required"`
 }
 
-// RefreshRequest is used for token refresh.
-type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" validate:"required"`
-}
-
-// LogoutRequest is used for logout.
-type LogoutRequest struct {
-	RefreshToken string `json:"refresh_token" validate:"required"`
-}
-
-// TokenResponse is returned after successful authentication.
+// TokenResponse is used internally for token generation.
+// Handlers convert this to LoginResponse or RefreshResponse for the API response.
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"` // seconds until access token expires
-	TokenType    string `json:"token_type"`
+	AccessToken  string `json:"-"` // Internal use only
+	RefreshToken string `json:"-"` // Internal use only
+	ExpiresIn    int    `json:"-"` // Internal use only
+	TokenType    string `json:"-"` // Internal use only
+}
+
+// LoginResponse is returned after successful login.
+// Contains user info and tokens in the response body.
+type LoginResponse struct {
+	User         UserResponse `json:"user"`
+	AccessToken  string       `json:"access_token"`
+	RefreshToken string       `json:"refresh_token"`
+	ExpiresAt    time.Time    `json:"expires_at"`
+	TokenType    string       `json:"token_type"`
+}
+
+// RefreshResponse is returned after successful token refresh.
+// Contains new tokens in the response body.
+type RefreshResponse struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	TokenType    string    `json:"token_type"`
 }
 
 // AccessTokenClaims represents the JWT claims for access tokens.

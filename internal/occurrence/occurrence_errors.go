@@ -52,4 +52,10 @@ var (
 
 	// ErrOccurrenceAlreadySuppressed indicates the occurrence is already suppressed.
 	ErrOccurrenceAlreadySuppressed = errors.New("occurrence is already suppressed")
+
+	// ErrOccurrenceNotSuppressed indicates the occurrence is not suppressed (for unsuppress).
+	ErrOccurrenceNotSuppressed = errors.New("occurrence is not suppressed")
+
+	// ErrOccurrenceIsSuppressed indicates the occurrence is suppressed (for rejecting answers).
+	ErrOccurrenceIsSuppressed = errors.New("cannot answer a suppressed occurrence")
 )

@@ -7,6 +7,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
+)
+
+// PostgreSQL SQLSTATE codes (https://www.postgresql.org/docs/current/errcodes-appendix.html).
+const (
+	pgErrCodeUniqueViolation     = "23505"
+	pgErrCodeForeignKeyViolation = "23503"
 )
 
 // Repository size limits (defence-in-depth validation).
@@ -15,35 +24,6 @@ import (
 const (
 	repoMaxUserIDLength = 64
 )
-
-// int64SliceToArrayLiteral converts a Go []int64 to a PostgreSQL array literal string.
-// Example: []int64{0, 1, 5} -> "{0,1,5}".
-func int64SliceToArrayLiteral(slice []int64) string {
-	if len(slice) == 0 {
-		return "{}"
-	}
-	parts := make([]string, len(slice))
-	for i, v := range slice {
-		parts[i] = strconv.FormatInt(v, 10)
-	}
-	return "{" + strings.Join(parts, ",") + "}"
-}
-
-// stringSliceToArrayLiteral converts a Go []string to a PostgreSQL array literal string.
-// Example: []string{"09:00", "14:30"} -> "{\"09:00\",\"14:30\"}".
-func stringSliceToArrayLiteral(slice []string) string {
-	if len(slice) == 0 {
-		return "{}"
-	}
-	parts := make([]string, len(slice))
-	for i, v := range slice {
-		// Escape quotes and backslashes, then wrap in quotes
-		escaped := strings.ReplaceAll(v, `\`, `\\`)
-		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-		parts[i] = `"` + escaped + `"`
-	}
-	return "{" + strings.Join(parts, ",") + "}"
-}
 
 // parseIntArrayLiteral parses a PostgreSQL array literal string to []int64.
 // Example: "{0,1,5}" -> []int64{0, 1, 5}.
@@ -436,8 +416,8 @@ func (r *sqlTaskRepository) createTask(ctx context.Context, userID, categoryID, 
 		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
-		// Check for foreign key violation (category not found)
-		if strings.Contains(err.Error(), "violates foreign key constraint") {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeForeignKeyViolation {
 			return Task{}, ErrCategoryNotFound
 		}
 		return Task{}, fmt.Errorf("createTask: %w", ErrDatabase)
@@ -633,10 +613,6 @@ func (r *sqlTaskRepository) getTaskCategoryID(ctx context.Context, id, userID st
 func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedule) (*Schedule, error) {
 	var s Schedule
 
-	// Convert slices to PostgreSQL array literals
-	daysOfWeekLiteral := int64SliceToArrayLiteral(schedule.DaysOfWeek)
-	scheduledTimesLiteral := stringSliceToArrayLiteral(schedule.ScheduledTimes)
-
 	// Scan into intermediate string variables for arrays
 	var daysOfWeekStr, scheduledTimesStr sql.NullString
 
@@ -644,12 +620,12 @@ func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedu
 		schedule.TaskID,
 		schedule.RecurrenceType,
 		schedule.RecurrenceInterval,
-		daysOfWeekLiteral,
+		pq.Int64Array(schedule.DaysOfWeek),
 		schedule.MonthDay,
 		schedule.MonthWeek,
 		schedule.MonthWeekday,
 		schedule.MonthOfYear,
-		scheduledTimesLiteral,
+		pq.StringArray(schedule.ScheduledTimes),
 		schedule.StartDate,
 		schedule.EndType,
 		schedule.EndDate,
@@ -781,7 +757,8 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 		&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "violates foreign key constraint") {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeForeignKeyViolation {
 			return WithDetails{}, ErrCategoryNotFound
 		}
 		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task: %w", ErrDatabase)
@@ -795,8 +772,6 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 	// Insert schedule
 	if schedule != nil {
 		schedule.TaskID = t.ID
-		daysOfWeekLiteral := int64SliceToArrayLiteral(schedule.DaysOfWeek)
-		scheduledTimesLiteral := stringSliceToArrayLiteral(schedule.ScheduledTimes)
 
 		var s Schedule
 		var daysOfWeekStr, scheduledTimesStr sql.NullString
@@ -805,12 +780,12 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 			schedule.TaskID,
 			schedule.RecurrenceType,
 			schedule.RecurrenceInterval,
-			daysOfWeekLiteral,
+			pq.Int64Array(schedule.DaysOfWeek),
 			schedule.MonthDay,
 			schedule.MonthWeek,
 			schedule.MonthWeekday,
 			schedule.MonthOfYear,
-			scheduledTimesLiteral,
+			pq.StringArray(schedule.ScheduledTimes),
 			schedule.StartDate,
 			schedule.EndType,
 			schedule.EndDate,

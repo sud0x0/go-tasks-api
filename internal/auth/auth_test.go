@@ -29,12 +29,9 @@ func (m *mockLogger) WithRequestID(requestID string) logger.Logger { return m }
 // mockAuthService implements authService for testing.
 type mockAuthService struct {
 	registerFunc                 func(ctx context.Context, req RegisterRequest) (User, error)
-	loginFunc                    func(ctx context.Context, req LoginRequest) (TokenResponse, error)
 	loginWithUserFunc            func(ctx context.Context, req LoginRequest) (TokenResponse, User, error)
 	refreshFunc                  func(ctx context.Context, refreshToken string, oldAccessToken string) (TokenResponse, error)
-	logoutFunc                   func(ctx context.Context, refreshToken string, jti string, tokenExp time.Time) error
 	logoutWithOwnershipCheckFunc func(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error
-	blocklistJTIFunc             func(ctx context.Context, jti string, tokenExp time.Time) error
 	validateAccessTokenFunc      func(ctx context.Context, tokenString string) (string, string, time.Time, error)
 }
 
@@ -43,13 +40,6 @@ func (m *mockAuthService) register(ctx context.Context, req RegisterRequest) (Us
 		return m.registerFunc(ctx, req)
 	}
 	return User{}, nil
-}
-
-func (m *mockAuthService) login(ctx context.Context, req LoginRequest) (TokenResponse, error) {
-	if m.loginFunc != nil {
-		return m.loginFunc(ctx, req)
-	}
-	return TokenResponse{}, nil
 }
 
 func (m *mockAuthService) loginWithUser(ctx context.Context, req LoginRequest) (TokenResponse, User, error) {
@@ -66,13 +56,6 @@ func (m *mockAuthService) refresh(ctx context.Context, refreshToken string, oldA
 	return TokenResponse{}, nil
 }
 
-func (m *mockAuthService) logout(ctx context.Context, refreshToken string, jti string, tokenExp time.Time) error {
-	if m.logoutFunc != nil {
-		return m.logoutFunc(ctx, refreshToken, jti, tokenExp)
-	}
-	return nil
-}
-
 func (m *mockAuthService) logoutWithOwnershipCheck(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error {
 	if m.logoutWithOwnershipCheckFunc != nil {
 		return m.logoutWithOwnershipCheckFunc(ctx, tokenHash, userID, jti, tokenExp)
@@ -85,13 +68,6 @@ func (m *mockAuthService) validateAccessToken(ctx context.Context, tokenString s
 		return m.validateAccessTokenFunc(ctx, tokenString)
 	}
 	return "", "", time.Time{}, nil
-}
-
-func (m *mockAuthService) blocklistJTI(ctx context.Context, jti string, tokenExp time.Time) error {
-	if m.blocklistJTIFunc != nil {
-		return m.blocklistJTIFunc(ctx, jti, tokenExp)
-	}
-	return nil
 }
 
 func setupTestHandler(service authService) *Handler {

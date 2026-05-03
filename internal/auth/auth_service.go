@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -68,12 +69,9 @@ const (
 // authService defines the interface for auth business logic.
 type authService interface {
 	register(ctx context.Context, req RegisterRequest) (User, error)
-	login(ctx context.Context, req LoginRequest) (TokenResponse, error)
 	loginWithUser(ctx context.Context, req LoginRequest) (TokenResponse, User, error)
 	refresh(ctx context.Context, refreshToken string, oldAccessToken string) (TokenResponse, error)
-	logout(ctx context.Context, refreshToken string, jti string, tokenExp time.Time) error
 	logoutWithOwnershipCheck(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error
-	blocklistJTI(ctx context.Context, jti string, tokenExp time.Time) error
 	validateAccessToken(ctx context.Context, tokenString string) (string, string, time.Time, error) // returns userID, jti, exp, error
 }
 
@@ -188,48 +186,6 @@ func (s *defaultAuthService) register(ctx context.Context, req RegisterRequest) 
 	return user, nil
 }
 
-func (s *defaultAuthService) login(ctx context.Context, req LoginRequest) (TokenResponse, error) {
-	// Reject whitespace-only usernames
-	trimmed := strings.TrimSpace(req.Username)
-	if trimmed == "" {
-		return TokenResponse{}, ErrInvalidUsername
-	}
-
-	// Password validation: reject control characters but return generic error
-	// to avoid leaking password policy to attackers
-	if containsControlChars(req.Password) {
-		return TokenResponse{}, ErrInvalidCredentials
-	}
-
-	// Apply NFKC normalization
-	normalised := normalisePassword(req.Password)
-
-	// Reject control characters after normalization (return generic error)
-	if containsControlChars(normalised) {
-		return TokenResponse{}, ErrInvalidCredentials
-	}
-
-	// Get user by username
-	user, err := s.repo.getUserByUsername(ctx, req.Username)
-	if err != nil {
-		if err == ErrUserNotFound {
-			// Fix X: Timing attack mitigation - perform dummy hash verification
-			// to ensure constant-time response regardless of whether user exists
-			_ = verifyPassword(normalised, dummyPasswordHash)
-			return TokenResponse{}, ErrInvalidCredentials
-		}
-		return TokenResponse{}, err
-	}
-
-	// Verify the NFKC-normalised password
-	if !verifyPassword(normalised, user.Password) {
-		return TokenResponse{}, ErrInvalidCredentials
-	}
-
-	// Generate tokens
-	return s.generateTokenPair(ctx, user.ID)
-}
-
 func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string, oldAccessToken string) (TokenResponse, error) {
 	// Hash the refresh token to look it up
 	tokenHash := hashRefreshToken(refreshToken)
@@ -273,18 +229,6 @@ func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string, o
 	return s.generateTokenPair(ctx, storedToken.UserID)
 }
 
-func (s *defaultAuthService) logout(ctx context.Context, refreshToken string, jti string, tokenExp time.Time) error {
-	// Delete the refresh token from the database
-	tokenHash := hashRefreshToken(refreshToken)
-	if err := s.repo.deleteRefreshToken(ctx, tokenHash); err != nil {
-		s.logger.LogError(ErrDatabase, err)
-		// Continue even if delete fails
-	}
-
-	// Add the jti to the Valkey blocklist
-	return s.blocklistJTI(ctx, jti, tokenExp)
-}
-
 // loginWithUser performs login and returns both the tokens and the user.
 // Used by the handler to return user info in the response body.
 func (s *defaultAuthService) loginWithUser(ctx context.Context, req LoginRequest) (TokenResponse, User, error) {
@@ -311,7 +255,7 @@ func (s *defaultAuthService) loginWithUser(ctx context.Context, req LoginRequest
 	// Get user by username
 	user, err := s.repo.getUserByUsername(ctx, req.Username)
 	if err != nil {
-		if err == ErrUserNotFound {
+		if errors.Is(err, ErrUserNotFound) {
 			// Fix X: Timing attack mitigation - perform dummy hash verification
 			// to ensure constant-time response regardless of whether user exists
 			_ = verifyPassword(normalised, dummyPasswordHash)
@@ -339,7 +283,7 @@ func (s *defaultAuthService) loginWithUser(ctx context.Context, req LoginRequest
 func (s *defaultAuthService) logoutWithOwnershipCheck(ctx context.Context, tokenHash, userID, jti string, tokenExp time.Time) error {
 	// Delete refresh token with ownership verification in repository
 	if err := s.repo.deleteRefreshTokenForUser(ctx, tokenHash, userID); err != nil {
-		if err == ErrTokenOwnershipMismatch {
+		if errors.Is(err, ErrTokenOwnershipMismatch) {
 			return err
 		}
 		s.logger.LogError(ErrDatabase, err)
@@ -351,7 +295,8 @@ func (s *defaultAuthService) logoutWithOwnershipCheck(ctx context.Context, token
 }
 
 // blocklistJTI adds the jti to the Valkey blocklist for the remaining token lifetime.
-// Used by logout when no refresh token is provided and by logoutWithOwnershipCheck internally.
+// Called internally by refresh (to revoke the old access token) and by
+// logoutWithOwnershipCheck (to revoke the access token whose refresh-token pair was just deleted).
 func (s *defaultAuthService) blocklistJTI(ctx context.Context, jti string, tokenExp time.Time) error {
 	if jti == "" {
 		return nil

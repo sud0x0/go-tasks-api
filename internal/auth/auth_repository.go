@@ -5,9 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// PostgreSQL SQLSTATE code for unique_violation
+// (https://www.postgresql.org/docs/current/errcodes-appendix.html).
+const pgErrCodeUniqueViolation = "23505"
 
 // Repository size limits (defence-in-depth validation).
 const (
@@ -188,8 +193,8 @@ func (r *sqlAuthRepository) createUser(ctx context.Context, username, passwordHa
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
-		// Check for unique constraint violation
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeUniqueViolation {
 			return User{}, ErrUserExists
 		}
 		return User{}, fmt.Errorf("createUser: %w", ErrDatabase)

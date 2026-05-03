@@ -132,10 +132,15 @@ func main() {
 	dailylogService := dailylog.NewDailyLogService(dailylogRepo, appLogger)
 	dailylogHandler := dailylog.NewDailyLogHandler(dailylogService, appLogger)
 
-	// Graceful shutdown signal channel - declared early so background goroutines can use it.
-	quit := make(chan os.Signal, 1)
+	// Bind shutdown signals to a context. signal.NotifyContext registers the
+	// handler before any goroutine reads from it, so signals always reach the
+	// shutdown path and a single channel is not raced between consumers.
+	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	// Start background cleanup of expired refresh tokens.
+	// The goroutine watches shutdownCtx.Done() — closing a context broadcasts to
+	// every reader without contending for a value, unlike a signal channel.
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
@@ -145,7 +150,7 @@ func main() {
 				if err := authRepo.CleanExpiredTokens(context.Background()); err != nil {
 					appLogger.LogError(errors.New("failed to clean expired tokens"), err)
 				}
-			case <-quit:
+			case <-shutdownCtx.Done():
 				return
 			}
 		}
@@ -232,9 +237,9 @@ func main() {
 		"valkey_url", cfg.Valkey.URL,
 	)
 
-	// Graceful shutdown on SIGINT or SIGTERM.
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-	<-quit
+	// Block until a shutdown signal arrives.
+	<-shutdownCtx.Done()
+	stopSignals() // restore default signal handling for any second SIGINT
 
 	appLogger.LogInfo("shutting down server")
 

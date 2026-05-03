@@ -48,6 +48,9 @@ _BUILD_/
 **/_BUILD_/
 _tmp_/
 
+# GoReleaser snapshot/release output
+dist/
+
 # Air live reload
 tmp/
 

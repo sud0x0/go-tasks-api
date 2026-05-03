@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -127,9 +128,10 @@ func verifySchema(ctx context.Context, sqlDB *sql.DB) error {
 	for _, table := range requiredTables {
 		var tableName string
 		err := sqlDB.QueryRowContext(ctx, query, table).Scan(&tableName)
-		if err == sql.ErrNoRows {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			missing = append(missing, table)
-		} else if err != nil {
+		case err != nil:
 			return fmt.Errorf("check table %s: %w", table, err)
 		}
 	}

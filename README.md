@@ -97,7 +97,9 @@ make build    # rebuild from scratch
 
 ## Version
 
-Invoke `./bin/api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture. Build the binary with `make build-binary` to embed the current commit and timestamp via `-ldflags`. Without these, the build-time fields fall back to `dev` / `unknown`.
+Invoke `./go-tasks-api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture.
+
+Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches binaries (Linux/macOS/Windows × amd64/arm64), `checksums.txt`, and a multi-arch container image (`ghcr.io/sud0x0/go-tasks-api:<tag>`) to a GitHub Release. Locally, `make prod-build` produces the same cross-compiled binaries under `dist/` without publishing.
 
 Example:
 
@@ -451,8 +453,8 @@ make socket      # Socket.dev supply chain scan (requires npm install -g socket)
 ```
 Development
   setup            First-time setup: copies .env, installs hooks, builds containers
-  build            Build containers and run migrations
-  build-binary     Build the API binary with version metadata injected
+  build            Build dev containers and run migrations
+  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)
   run              Start containers and run migrations
   logs             View application logs
   destroy          Destroy all containers, volumes, and images

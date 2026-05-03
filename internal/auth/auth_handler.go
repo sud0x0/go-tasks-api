@@ -304,29 +304,23 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		userID, jti, tokenExp, _ = h.service.validateAccessToken(ctx, accessToken)
 	}
 
-	// If we have a valid userID, perform ownership-verified logout
-	if userID != "" {
-		tokenHash := hashRefreshToken(refreshToken)
-		if err := h.service.logoutWithOwnershipCheck(ctx, tokenHash, userID, jti, tokenExp); err != nil {
-			if errors.Is(err, ErrTokenOwnershipMismatch) {
-				// Token doesn't belong to this user - this is a security concern
-				log.LogInfo("logout ownership mismatch", "user_id", userID)
-				shared.WriteUnauthorised(w)
-				return
-			}
-			// Log other errors but still continue
-			log.LogInfo("logout error", "error", err.Error())
+	// Logout requires a valid access token so we can verify the refresh token's
+	// ownership before revoking it. Without a verifiable userID we return 204
+	// without acting — the legitimate user can re-authenticate and try again.
+	if userID == "" {
+		log.LogInfo("logout: ignored, no valid access token")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	tokenHash := hashRefreshToken(refreshToken)
+	if err := h.service.logoutWithOwnershipCheck(ctx, tokenHash, userID, jti, tokenExp); err != nil {
+		if errors.Is(err, ErrTokenOwnershipMismatch) {
+			log.LogInfo("logout ownership mismatch", "user_id", userID)
+			shared.WriteUnauthorised(w)
+			return
 		}
-	} else {
-		// No valid access token, but we have a refresh token - try to delete it anyway
-		tokenHash := hashRefreshToken(refreshToken)
-		_ = h.service.logout(ctx, refreshToken, "", time.Time{})
-		// Also try to blocklist any jti we might have
-		if jti != "" {
-			_ = h.service.blocklistJTI(ctx, jti, tokenExp)
-		}
-		// This path ignores errors since we can't verify ownership
-		log.LogInfo("logout without valid access token", "token_hash_prefix", tokenHash[:8])
+		log.LogInfo("logout error", "error", err.Error())
 	}
 
 	log.LogInfo("logout succeeded")

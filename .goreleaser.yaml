@@ -1,0 +1,140 @@
+# GoReleaser v2 configuration. Validate with `goreleaser check`.
+# Snapshot a local build with `make prod-build`.
+# Tagged releases run via .github/workflows/release.yml on `git push --tags`.
+
+version: 2
+
+project_name: go-tasks-api
+
+before:
+  hooks:
+    - go mod tidy
+
+# Cross-compile the API binary for the platforms most self-hosters need.
+builds:
+  - id: api
+    main: ./cmd/api
+    binary: go-tasks-api
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X go-tasks-api/internal/version.Version={{ .Version }}
+      - -X go-tasks-api/internal/version.GitCommit={{ .ShortCommit }}
+      - -X go-tasks-api/internal/version.BuildDate={{ .Date }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows on ARM is rare for server workloads.
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - .env.example
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'Merge pull request'
+      - 'Merge branch'
+
+# Per-arch container images. Each one is built with buildx for a single
+# platform; docker_manifests below stitches them into a multi-arch tag.
+dockers:
+  - id: linux-amd64
+    image_templates:
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-amd64"
+    use: buildx
+    dockerfile: Dockerfile
+    goos: linux
+    goarch: amd64
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/sud0x0/go-tasks-api"
+      - "--label=org.opencontainers.image.licenses=BUSL-1.1"
+
+  - id: linux-arm64
+    image_templates:
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-arm64"
+    use: buildx
+    dockerfile: Dockerfile
+    goos: linux
+    goarch: arm64
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/sud0x0/go-tasks-api"
+      - "--label=org.opencontainers.image.licenses=BUSL-1.1"
+
+# Combine the per-arch images into a single multi-arch tag and a :latest tag.
+docker_manifests:
+  - name_template: "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-amd64"
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/sud0x0/go-tasks-api:latest"
+    image_templates:
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-amd64"
+      - "ghcr.io/sud0x0/go-tasks-api:{{ .Version }}-arm64"
+
+release:
+  github:
+    owner: sud0x0
+    name: go-tasks-api
+  draft: false
+  prerelease: auto
+  header: |
+    ## go-tasks-api {{ .Tag }}
+
+    **Container image (recommended):** `ghcr.io/sud0x0/go-tasks-api:{{ .Version }}` — multi-arch (`linux/amd64`, `linux/arm64`).
+
+    Bare binaries are attached below.
+  footer: |
+    ## Run the container
+
+    ```bash
+    docker pull ghcr.io/sud0x0/go-tasks-api:{{ .Version }}
+    docker run --env-file .env -p 8080:8080 \
+        -v "$PWD/keys:/keys:ro" \
+        ghcr.io/sud0x0/go-tasks-api:{{ .Version }}
+    ```
+
+    See the [README](https://github.com/sud0x0/go-tasks-api#getting-started) for required environment variables, RSA key provisioning, and migration steps.
+
+    Verify the binary downloads with `sha256sum -c checksums.txt`.

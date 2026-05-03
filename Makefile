@@ -14,17 +14,14 @@ APP_CONTAINER=app_api
 # The -s -w flags strip debug info and symbol table (standard for release).
 # The -trimpath flag removes local path info for reproducibility.
 #
+# Production releases are driven by GoReleaser (see .goreleaser.yaml and
+# .github/workflows/release.yml). VERSION here is only used for the snapshot
+# label printed by `make prod-build`; the real version on a tagged release is
+# the git tag.
 VERSION     ?= 0.1.0
-GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-
-LDFLAGS := -s -w \
-    -X go-tasks-api/internal/version.Version=$(VERSION) \
-    -X go-tasks-api/internal/version.GitCommit=$(GIT_COMMIT) \
-    -X go-tasks-api/internal/version.BuildDate=$(BUILD_DATE)
 # ---------------------------------------------------------------------
 
-.PHONY: setup build build-binary run stop logs destroy clean \
+.PHONY: setup build prod-build run stop logs destroy clean \
         db-migrate db-reset db-status db-wait \
         test test-pretty \
         lint fmt vet \
@@ -73,12 +70,36 @@ build:
 	@echo "Build complete. Application running at http://localhost:8080"
 	@echo "Use 'make logs' to view application logs."
 
-# Build the API binary with version metadata injected (local/CI builds)
-build-binary:
-	@echo "Building API binary with version $(VERSION)..."
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/api ./cmd/api
-	@echo "Binary built: bin/api"
-	@echo "Run './bin/api --version' to verify."
+# Build a local snapshot of the production release using GoReleaser.
+# Produces cross-compiled binaries and archives under dist/ — Linux, macOS,
+# and Windows for amd64 and arm64. Skips the container build (so podman
+# users don't need to alias `podman` as `docker`) and never publishes.
+#
+# A real tagged release is cut by pushing a tag — the GitHub Actions
+# workflow at .github/workflows/release.yml runs `goreleaser release`
+# end-to-end, including the multi-arch container image push to ghcr.io.
+#
+# Requires goreleaser installed locally: https://goreleaser.com/install/
+#
+# Runtime reminders for whoever runs the published artefacts:
+#   - Generate RSA keys out-of-band and mount as a read-only volume/secret;
+#     the binary auto-generates keys on first run, which invalidates tokens
+#     across replicas/restarts if the filesystem isn't persistent.
+#   - Run goose migrations against the prod DB before deploying a new image
+#     (the binary refuses to start if required tables are missing).
+#   - Pass DB_*, VALKEY_URL, JWT_*, CORS_ALLOWED_ORIGINS via --env-file or
+#     orchestrator secrets — never bake .env into the image.
+#   - Block /metrics at the ingress / reverse proxy in production.
+prod-build:
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
+		exit 1; \
+	}
+	@echo "Building snapshot release..."
+	@goreleaser release --snapshot --clean --skip=publish,docker
+	@echo ""
+	@echo "Snapshot artefacts written to dist/."
+	@echo "To cut a real release: git tag vX.Y.Z && git push --tags"
 
 # Start containers and run migrations
 run:
@@ -106,7 +127,7 @@ destroy:
 # Delete all temp, build, and test folders
 clean:
 	@echo "Cleaning temp, build, and test artifacts..."
-	@rm -rf _tmp_/ tmp/ bin/ _BUILD_/ _test_results_/ keys/
+	@rm -rf _tmp_/ tmp/ bin/ _BUILD_/ _test_results_/ keys/ dist/
 	@rm -rf .golangci-lint-cache/
 	@rm -f *.out *.coverprofile *.test .env
 	@echo "Clean complete."
@@ -199,8 +220,8 @@ help:
 	@echo "Development Commands"
 	@echo "--------------------"
 	@echo "  setup            First-time setup: copies .env, installs hooks, builds containers"
-	@echo "  build            Build containers and run migrations"
-	@echo "  build-binary     Build the API binary with version metadata injected"
+	@echo "  build            Build dev containers and run migrations"
+	@echo "  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)"
 	@echo "  run              Start containers and run migrations"
 	@echo "  logs             View application logs"
 	@echo "  destroy          Destroy all containers, volumes, and images"

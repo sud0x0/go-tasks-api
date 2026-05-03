@@ -53,6 +53,18 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# SBOMs for the release archives. One SPDX-JSON per archive, generated with
+# Syft using GoReleaser's default cataloger configuration. The resulting
+# `<archive>.sbom.json` files are auto-uploaded to the GitHub Release.
+#
+# GoReleaser cannot generate SBOMs for the Docker images it pushes — that is
+# a documented limitation (https://goreleaser.com/customization/sbom/). Image
+# SBOMs are generated as a post-step in .github/workflows/release.yml and
+# attached to the image with `cosign attest --type spdxjson`.
+sboms:
+  - id: archive
+    artifacts: archive
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 

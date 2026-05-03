@@ -12,7 +12,8 @@ FROM gcr.io/distroless/static-debian12
 # Run as the nonroot user that distroless ships with (uid 65532).
 USER nonroot:nonroot
 
-COPY go-tasks-api /go-tasks-api
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/go-tasks-api /go-tasks-api
 
 EXPOSE 8080
 

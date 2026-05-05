@@ -57,6 +57,7 @@ func main() {
 	// Initialise Valkey client.
 	valkeyClient, err := valkey.NewClient(valkey.ClientOption{
 		InitAddress: []string{cfg.Valkey.URL},
+		Password:    cfg.Valkey.Password,
 	})
 	if err != nil {
 		appLogger.LogError(errors.New("failed to connect to Valkey"), err)

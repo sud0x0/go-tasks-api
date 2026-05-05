@@ -15,12 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # publish GitHub Releases
-      packages: write   # push images to ghcr.io
-      id-token: write   # OIDC token for keyless Cosign signing
+      id-token: write   # OIDC for SLSA provenance signing
     outputs:
       hashes: ${{ steps.subjects.outputs.hashes }}
-      image: ${{ steps.image.outputs.image }}
-      digest: ${{ steps.image.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -33,30 +30,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # QEMU lets us build the linux/arm64 image on an amd64 runner.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Cosign for keyless image signing and SBOM attestation. cosign-installer
-      # v4.x is required to install the Cosign v3 line; pinning the patched
-      # release explicitly so we don't pick up a regressed default.
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.1
-        with:
-          cosign-release: 'v3.0.6'
-
-      # Syft is invoked by GoReleaser's `sboms:` block (archive SBOMs) and by
-      # the post-step that catalogs the pushed Docker manifest.
+      # Syft generates SPDX-JSON SBOMs per binary via GoReleaser's `sboms:` block.
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.22.0
 
@@ -69,65 +43,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ----------------------------------------------------------------------
-      # Post-GoReleaser: container signing and SBOM attestation
-      # ----------------------------------------------------------------------
-      # The next steps work against the multi-arch Docker Manifest that
-      # `docker_manifests:` in .goreleaser.yaml just pushed. Signing the
-      # manifest digest covers both arches: clients verifying after a
-      # `docker pull` resolve the manifest first.
-
-      - name: Extract image and digest from artifacts.json
-        id: image
-        run: |
-          # The release pushes both :<version> and :latest tags pointing at the
-          # same content, producing two Docker Manifest entries with identical
-          # digests. unique + [0] picks one canonical pair.
-          # `sub(":[^:]+$"; "")` strips the tag without breaking on registries
-          # that include an explicit port in the host (e.g. host:5000/repo:tag).
-          IMAGE=$(jq -r '[.[] | select(.type=="Docker Manifest") | .name | sub(":[^:]+$"; "")] | unique | .[0]' dist/artifacts.json)
-          DIGEST=$(jq -r '[.[] | select(.type=="Docker Manifest") | .extra.Digest] | unique | .[0]' dist/artifacts.json)
-          if [ -z "$IMAGE" ] || [ -z "$DIGEST" ] || [ "$IMAGE" = "null" ] || [ "$DIGEST" = "null" ]; then
-            echo "::error::failed to extract image/digest from dist/artifacts.json"
-            exit 1
-          fi
-          echo "image=$IMAGE"   >> "$GITHUB_OUTPUT"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-
-      - name: Sign image with Cosign (keyless OIDC)
-        env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
-
-      - name: Generate SBOM for image with Syft
-        env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-        run: syft "${IMAGE}@${DIGEST}" -o spdx-json=image.sbom.spdx.json
-
-      - name: Attest SBOM to image with Cosign
-        env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-        run: cosign attest --yes --type spdxjson --predicate image.sbom.spdx.json "${IMAGE}@${DIGEST}"
-
       # SLSA generic generator subject format: lines of "<sha256>  <filename>",
-      # base64-encoded as a single string. `extra.Checksum` on Archive entries
+      # base64-encoded as a single string. `extra.Checksum` on Binary entries
       # is `sha256:<hex>`; we strip the prefix and join with two spaces.
       - name: Compute binary provenance subjects
         id: subjects
         run: |
-          HASHES=$(jq -r '.[] | select(.type=="Archive") | "\(.extra.Checksum | split(":")[1])  \(.name)"' dist/artifacts.json | base64 -w0)
+          HASHES=$(jq -r '.[] | select(.type=="Binary") | "\(.extra.Checksum | split(":")[1])  \(.name)"' dist/artifacts.json | base64 -w0)
           if [ -z "$HASHES" ]; then
-            echo "::error::no Archive subjects found in dist/artifacts.json"
+            echo "::error::no Binary subjects found in dist/artifacts.json"
             exit 1
           fi
           echo "hashes=$HASHES" >> "$GITHUB_OUTPUT"
 
-  # SLSA Level 3 build provenance for the binary archives. Attaches a
+  # SLSA Level 3 build provenance for the released binaries. Attaches a
   # `<release>.intoto.jsonl` file to the GitHub Release. Verify with:
-  #   slsa-verifier verify-artifact <archive> --provenance-path <intoto> ...
+  #   slsa-verifier verify-artifact <binary> --provenance-path <intoto> ...
   binary-provenance:
     needs: [goreleaser]
     permissions:
@@ -138,20 +69,3 @@ jobs:
     with:
       base64-subjects: ${{ needs.goreleaser.outputs.hashes }}
       upload-assets: true
-
-  # SLSA Level 3 build provenance for the multi-arch container image. Pushes
-  # the attestation to the registry alongside the image; verify with:
-  #   slsa-verifier verify-image <image>@<digest>
-  container-provenance:
-    needs: [goreleaser]
-    permissions:
-      actions: read
-      id-token: write
-      packages: write     # push the provenance attestation to ghcr.io
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
-    with:
-      image: ${{ needs.goreleaser.outputs.image }}
-      digest: ${{ needs.goreleaser.outputs.digest }}
-      registry-username: ${{ github.actor }}
-    secrets:
-      registry-password: ${{ secrets.GITHUB_TOKEN }}

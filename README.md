@@ -26,7 +26,9 @@ A task and habit management REST API built with Go. Users register, create recur
 The project follows Domain-Driven Design with a layered structure. Each domain (auth, category, task, occurrence, dailylog) owns its handler, service, repository, model, and errors. No domain imports another domain's repository directly.
 
 ```
-cmd/api/main.go               — wiring, middleware, graceful shutdown
+cmd/
+  api/main.go                 — API server: wiring, middleware, graceful shutdown
+  migrate/main.go             — database migrator binary (embeds migrations/*.sql)
 internal/
   auth/                       — registration, login, JWT, refresh tokens, blocklist
   category/                   — task categories (CRUD with soft/hard delete)
@@ -39,7 +41,7 @@ internal/
   middleware/                 — CORS, security headers, request logger
   shared/                     — validation helpers, pagination, sanitisation, logger
   version/                    — version info for --version flag
-migrations/                   — Goose SQL migrations
+migrations/                   — Goose SQL migrations (also embedded into cmd/migrate at build time)
 ```
 
 **Request flow:** HTTP request → global middleware (request ID, logger, security headers, CORS, metrics, timeout, body limit) → auth middleware (JWT validation, blocklist check) → handler (sanitise → validate → service) → service (business logic) → repository (prepared statements) → PostgreSQL.
@@ -99,7 +101,7 @@ make build    # rebuild from scratch
 
 Invoke `./go-tasks-api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture.
 
-Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches binaries (Linux/macOS/Windows × amd64/arm64), `checksums.txt`, and a multi-arch container image (`ghcr.io/sud0x0/go-tasks-api:<tag>`) to a GitHub Release. Locally, `make prod-build` produces the same cross-compiled binaries under `dist/` without publishing.
+Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches two binaries per platform (the API server `go-tasks-api-<version>_<os>_<arch>` and the database migrator `go-tasks-database-migrator-<version>_<os>_<arch>`, Linux/macOS/Windows × amd64/arm64), `checksums.txt`, per-binary SPDX SBOMs, and SLSA Level 3 build provenance to a GitHub Release. Locally, `goreleaser release --snapshot --clean` produces the same cross-compiled binaries under `dist/` without publishing.
 
 Example:
 
@@ -133,12 +135,13 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | `LOG_LEVEL` | No | `development` | `development`, `production`, `quiet`, `silent` |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated origins (no wildcards in production) |
 | `VALKEY_URL` | No | `localhost:6379` | Valkey address |
+| `VALKEY_PASSWORD` | No | — | Password for `requirepass`-protected Valkey (sent inline with HELLO) |
 | `JWT_ISSUER` | No | `go-tasks-api` | JWT `iss` claim |
 | `JWT_AUDIENCE` | No | `go-tasks-api` | JWT `aud` claim |
 | `JWT_PRIVATE_KEY_PATH` | No | `./keys/private.pem` | RSA private key for signing |
 | `JWT_PUBLIC_KEY_PATH` | No | `./keys/public.pem` | RSA public key for verification |
 
-RSA keys are generated automatically on first startup if not present. In production, generate and manage keys separately and never include them in version control or build artefacts.
+RSA keys are loaded from the configured paths on startup. The loader accepts both PKCS#1 (`-----BEGIN RSA PRIVATE KEY-----`) and PKCS#8 (`-----BEGIN PRIVATE KEY-----`) PEM formats — Vault and modern `openssl` emit the latter by default. If the key files are missing the binary generates a fresh PKCS#1 keypair on first run; a parse or permission error on an *existing* key file is a hard error rather than a silent regeneration. In production, provision keys out-of-band and mount the directory read-only.
 
 ---
 
@@ -391,9 +394,17 @@ Migrations in `migrations/`:
 
 - `00001_initial_schema.sql` — complete database schema including users, refresh tokens, categories, tasks, schedules, select options, occurrences, answers, and daily logs with all indexes and constraints
 
-Run migrations with `make db-migrate`. Roll back with `make db-reset`. Check status with `make db-status`.
+**Development:** run migrations with `make db-migrate`. Roll back with `make db-reset`. Check status with `make db-status`. These targets shell into the dev container and invoke the `goose` CLI against the mounted `migrations/` directory.
 
-All migrations are managed by Goose and run inside the app container.
+**Production / release:** each tagged release publishes a `go-tasks-database-migrator-<version>_<os>_<arch>` binary alongside the API binary. The migrator is a self-contained executable — the SQL migrations are embedded into the binary at build time, so it has no external dependency on `goose` or on the migrations directory. Run it before rolling out a new API binary:
+
+```bash
+chmod +x go-tasks-database-migrator-<version>_linux_amd64
+DATABASE_URL="host=db port=5432 user=$DB_USER password=$DB_PASSWORD dbname=$DB_NAME sslmode=require" \
+    ./go-tasks-database-migrator-<version>_linux_amd64 up
+```
+
+Subcommands: `up`, `up-by-one`, `up-to <v>`, `down`, `down-to <v>`, `redo`, `reset`, `status`, `version`.
 
 **Occurrence generation** follows the iCalendar materialised occurrence pattern — occurrences are generated on demand when `GET /occurrences` is called and upserted into `task_occurrences`. Calling the same date twice is idempotent. Occurrence uniqueness is enforced per-task, not per-schedule — this ensures a task generates exactly one occurrence per date/time slot regardless of how schedules are configured.
 
@@ -429,6 +440,9 @@ Pre-commit hooks run automatically on every commit:
 - `govulncheck` — known vulnerability scan on `go.mod` / `go.sum` changes
 - `semgrep` — static security analysis
 - `gitleaks` — secrets detection
+- `conventional-pre-commit` — validates that commit subjects follow the [Conventional Commits](https://www.conventionalcommits.org/) spec (`feat:`, `fix:`, `chore:`, `feat(api)!:`, etc.). GoReleaser groups the release changelog by these prefixes.
+
+`make setup` installs both the `pre-commit` and `commit-msg` stage hooks. If you bootstrap a clone manually, run `pre-commit install --hook-type commit-msg` in addition to `pre-commit install` so the conventional-commits check actually fires.
 
 Run all hooks manually:
 

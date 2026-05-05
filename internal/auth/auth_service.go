@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -528,11 +529,15 @@ func hashRefreshToken(token string) string {
 }
 
 // loadOrGenerateKeys loads RSA keys from files or generates new ones if they don't exist.
+// A parse or permission error on an existing key file is a hard error — we only fall
+// through to generation when the file is genuinely missing.
 func loadOrGenerateKeys(privateKeyPath, publicKeyPath string) (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	// Try to load existing keys
 	privateKey, publicKey, err := loadKeys(privateKeyPath, publicKeyPath)
 	if err == nil {
 		return privateKey, publicKey, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, fmt.Errorf("load keys: %w", err)
 	}
 
 	// Generate new keys
@@ -585,9 +590,9 @@ func loadKeys(privateKeyPath, publicKeyPath string) (*rsa.PrivateKey, *rsa.Publi
 		return nil, nil, fmt.Errorf("failed to decode private key PEM")
 	}
 
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	privateKey, err := parseRSAPrivateKey(block)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse private key: %w", err)
+		return nil, nil, err
 	}
 
 	// Load public key
@@ -612,4 +617,30 @@ func loadKeys(privateKeyPath, publicKeyPath string) (*rsa.PrivateKey, *rsa.Publi
 	}
 
 	return privateKey, publicKey, nil
+}
+
+// parseRSAPrivateKey accepts both PKCS#1 ("RSA PRIVATE KEY") and PKCS#8
+// ("PRIVATE KEY") PEM blocks. PKCS#8 is what Vault and modern openssl emit
+// by default; PKCS#1 is what this service writes when generating its own keys.
+func parseRSAPrivateKey(block *pem.Block) (*rsa.PrivateKey, error) {
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse PKCS#1 private key: %w", err)
+		}
+		return key, nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse PKCS#8 private key: %w", err)
+		}
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("PKCS#8 private key is not RSA (got %T)", key)
+		}
+		return rsaKey, nil
+	default:
+		return nil, fmt.Errorf("unsupported private key PEM type: %q", block.Type)
+	}
 }

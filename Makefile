@@ -49,6 +49,7 @@ setup:
 pre-commit-install:
 	@echo "Installing pre-commit hooks..."
 	@pre-commit install
+	@pre-commit install --hook-type commit-msg
 	@echo "Pre-warming hook cache (downloads happen once per machine)..."
 	@pre-commit install --install-hooks
 	@echo "Pre-commit hooks installed."
@@ -81,14 +82,14 @@ build:
 #
 # Requires goreleaser installed locally: https://goreleaser.com/install/
 #
-# Runtime reminders for whoever runs the published artefacts:
+# Runtime reminders for whoever runs the published binaries:
 #   - Generate RSA keys out-of-band and mount as a read-only volume/secret;
 #     the binary auto-generates keys on first run, which invalidates tokens
 #     across replicas/restarts if the filesystem isn't persistent.
-#   - Run goose migrations against the prod DB before deploying a new image
-#     (the binary refuses to start if required tables are missing).
+#   - Run the database migrator against the prod DB before deploying a new
+#     API binary (the API refuses to start if required tables are missing).
 #   - Pass DB_*, VALKEY_URL, JWT_*, CORS_ALLOWED_ORIGINS via --env-file or
-#     orchestrator secrets — never bake .env into the image.
+#     orchestrator secrets.
 #   - Block /metrics at the ingress / reverse proxy in production.
 prod-build:
 	@command -v goreleaser >/dev/null 2>&1 || { \
@@ -96,9 +97,9 @@ prod-build:
 		exit 1; \
 	}
 	@echo "Building snapshot release..."
-	@goreleaser release --snapshot --clean --skip=publish,docker
+	@goreleaser release --snapshot --clean --skip=sbom
 	@echo ""
-	@echo "Snapshot artefacts written to dist/."
+	@echo "Snapshot artefacts written to dist/. (SBOM generation skipped — install syft to include it.)"
 	@echo "To cut a real release: git tag vX.Y.Z && git push --tags"
 
 # Start containers and run migrations

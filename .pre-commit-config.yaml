@@ -7,6 +7,16 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
 
+  # Conventional Commits enforcement. GoReleaser groups the changelog by the
+  # type prefix (feat:/fix:/perf:/...), so subject lines must follow the spec.
+  # NOTE: requires `pre-commit install --hook-type commit-msg` once per clone —
+  # the default `pre-commit install` only wires the pre-commit hook.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
   # Secrets detection
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1

@@ -44,7 +44,8 @@ type LogConfig struct {
 
 // ValkeyConfig holds Valkey (Redis-compatible) configuration.
 type ValkeyConfig struct {
-	URL string
+	URL      string
+	Password string
 }
 
 // JWTConfig holds JWT authentication configuration.
@@ -78,7 +79,8 @@ func Load() (*Config, error) {
 			Level: strings.ToLower(getEnv("LOG_LEVEL", "development")),
 		},
 		Valkey: ValkeyConfig{
-			URL: getEnv("VALKEY_URL", "localhost:6379"),
+			URL:      getEnv("VALKEY_URL", "localhost:6379"),
+			Password: getEnv("VALKEY_PASSWORD", ""),
 		},
 		JWT: JWTConfig{
 			Issuer:         getEnv("JWT_ISSUER", "go-tasks-api"),

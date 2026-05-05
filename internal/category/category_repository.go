@@ -192,13 +192,11 @@ func (r *sqlCategoryRepository) getCategory(ctx context.Context, id, userID stri
 		if errors.Is(err, sql.ErrNoRows) {
 			return Category{}, ErrCategoryNotFound
 		}
-		r.logger.LogError(ErrDatabase, fmt.Errorf("getCategory scan %s: %w", id, err))
-		return Category{}, fmt.Errorf("getCategory %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("getCategory %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := cat.Validate(); err != nil {
-		r.logger.LogError(ErrDatabase, fmt.Errorf("getCategory validate %s: %w", id, err))
-		return Category{}, fmt.Errorf("getCategory validate %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("getCategory validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return cat, nil
 }
@@ -210,7 +208,7 @@ func (r *sqlCategoryRepository) getCategories(ctx context.Context, userID string
 
 	rows, err := r.stmtGetCategories.QueryContext(ctx, userID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getCategories: %w", ErrDatabase)
+		return nil, fmt.Errorf("getCategories: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -224,7 +222,7 @@ func (r *sqlCategoryRepository) getInactiveCategories(ctx context.Context, userI
 
 	rows, err := r.stmtGetInactiveCategories.QueryContext(ctx, userID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getInactiveCategories: %w", ErrDatabase)
+		return nil, fmt.Errorf("getInactiveCategories: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -239,16 +237,16 @@ func (r *sqlCategoryRepository) scanCategories(rows *sql.Rows, methodName string
 			&cat.ID, &cat.UserID, &cat.Name, &cat.Description, &cat.Colour,
 			&cat.IsActive, &cat.CreatedAt, &cat.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("%s scan: %w", methodName, ErrDatabase)
+			return nil, fmt.Errorf("%s scan: %w: %w", methodName, ErrDatabase, err)
 		}
 		if err := cat.Validate(); err != nil {
-			return nil, fmt.Errorf("%s validate: %w", methodName, ErrDatabase)
+			return nil, fmt.Errorf("%s validate: %w: %w", methodName, ErrDatabase, err)
 		}
 		categories = append(categories, cat)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s rows: %w", methodName, ErrDatabase)
+		return nil, fmt.Errorf("%s rows: %w: %w", methodName, ErrDatabase, err)
 	}
 
 	if len(categories) == 0 {
@@ -281,13 +279,13 @@ func (r *sqlCategoryRepository) createCategory(ctx context.Context, userID, name
 			}
 			// Unknown unique constraint - log and return database error
 			r.logger.LogError(ErrDatabase, fmt.Errorf("createCategory unknown unique violation: %s", pgErr.ConstraintName))
-			return Category{}, fmt.Errorf("createCategory: %w", ErrDatabase)
+			return Category{}, fmt.Errorf("createCategory: %w: %w", ErrDatabase, err)
 		}
-		return Category{}, fmt.Errorf("createCategory: %w", ErrDatabase)
+		return Category{}, fmt.Errorf("createCategory: %w: %w", ErrDatabase, err)
 	}
 
 	if err := cat.Validate(); err != nil {
-		return Category{}, fmt.Errorf("createCategory validate: %w", ErrDatabase)
+		return Category{}, fmt.Errorf("createCategory validate: %w: %w", ErrDatabase, err)
 	}
 	return cat, nil
 }
@@ -327,13 +325,13 @@ func (r *sqlCategoryRepository) updateCategory(ctx context.Context, id, userID, 
 			}
 			// Unknown unique constraint - log and return database error
 			r.logger.LogError(ErrDatabase, fmt.Errorf("updateCategory unknown unique violation: %s", pgErr.ConstraintName))
-			return Category{}, fmt.Errorf("updateCategory %s: %w", id, ErrDatabase)
+			return Category{}, fmt.Errorf("updateCategory %s: %w: %w", id, ErrDatabase, err)
 		}
-		return Category{}, fmt.Errorf("updateCategory %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("updateCategory %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := cat.Validate(); err != nil {
-		return Category{}, fmt.Errorf("updateCategory validate %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("updateCategory validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return cat, nil
 }
@@ -345,12 +343,12 @@ func (r *sqlCategoryRepository) deactivateCategory(ctx context.Context, id, user
 
 	result, err := r.stmtDeactivateCategory.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("deactivateCategory %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateCategory %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("deactivateCategory rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateCategory rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -366,12 +364,12 @@ func (r *sqlCategoryRepository) hardDeleteCategory(ctx context.Context, id, user
 
 	result, err := r.stmtHardDeleteCategory.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("hardDeleteCategory %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteCategory %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("hardDeleteCategory rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteCategory rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -388,12 +386,12 @@ func (r *sqlCategoryRepository) bulkDeactivateCategories(ctx context.Context, us
 	query := `UPDATE categories SET is_active = false, updated_at = NOW() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = true`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateCategories: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateCategories: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateCategories rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateCategories rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -407,12 +405,12 @@ func (r *sqlCategoryRepository) bulkHardDeleteCategories(ctx context.Context, us
 	query := `DELETE FROM categories WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = false`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteCategories: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteCategories: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteCategories rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteCategories rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -430,14 +428,14 @@ func (r *sqlCategoryRepository) reactivateCategory(ctx context.Context, id, user
 		if errors.Is(err, sql.ErrNoRows) {
 			return Category{}, ErrCategoryNotFound
 		}
-		return Category{}, fmt.Errorf("reactivateCategory getName %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("reactivateCategory getName %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	// Check if another active category has this name
 	var exists bool
 	err = r.stmtCheckActiveNameExists.QueryRowContext(ctx, userID, name, id).Scan(&exists)
 	if err != nil {
-		return Category{}, fmt.Errorf("reactivateCategory checkName %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("reactivateCategory checkName %s: %w: %w", id, ErrDatabase, err)
 	}
 	if exists {
 		return Category{}, ErrReactivateNameCollision
@@ -453,11 +451,11 @@ func (r *sqlCategoryRepository) reactivateCategory(ctx context.Context, id, user
 		if errors.Is(err, sql.ErrNoRows) {
 			return Category{}, ErrCategoryNotFound
 		}
-		return Category{}, fmt.Errorf("reactivateCategory %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("reactivateCategory %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := cat.Validate(); err != nil {
-		return Category{}, fmt.Errorf("reactivateCategory validate %s: %w", id, ErrDatabase)
+		return Category{}, fmt.Errorf("reactivateCategory validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return cat, nil
 }
@@ -473,7 +471,7 @@ func (r *sqlCategoryRepository) checkCategoryOwnership(ctx context.Context, id, 
 	var exists bool
 	err := r.stmtCheckOwnership.QueryRowContext(ctx, id, userID).Scan(&exists)
 	if err != nil {
-		return fmt.Errorf("checkCategoryOwnership %s: %w", id, ErrDatabase)
+		return fmt.Errorf("checkCategoryOwnership %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if !exists {
@@ -495,7 +493,7 @@ func (r *sqlCategoryRepository) getCategoryIsActive(ctx context.Context, id, use
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrCategoryNotFound
 		}
-		return false, fmt.Errorf("getCategoryIsActive %s: %w", id, ErrDatabase)
+		return false, fmt.Errorf("getCategoryIsActive %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	return isActive, nil
@@ -510,7 +508,7 @@ func (r *sqlCategoryRepository) hasActiveTasks(ctx context.Context, id, userID s
 	var exists bool
 	err := r.stmtHasActiveTasks.QueryRowContext(ctx, id, userID).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("hasActiveTasks %s: %w", id, ErrDatabase)
+		return false, fmt.Errorf("hasActiveTasks %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	return exists, nil

@@ -59,22 +59,16 @@ type JWTConfig struct {
 // Load reads all environment variables and returns a validated Config.
 // Returns an error if required variables are missing.
 func Load() (*Config, error) {
-	cfg := &Config{
+	dbCfg, err := LoadDatabase()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),
 		},
-		Database: DatabaseConfig{
-			Host:            getEnv("DB_HOST", ""),
-			Port:            getEnv("DB_PORT", ""),
-			User:            getEnv("DB_USER", ""),
-			Password:        getEnv("DB_PASSWORD", ""),
-			Name:            getEnv("DB_NAME", ""),
-			SSLMode:         getEnv("DB_SSLMODE", "require"),
-			MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 100),
-			MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 50),
-			ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_MINS", 5)) * time.Minute,
-			ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_MINS", 10)) * time.Minute,
-		},
+		Database: *dbCfg,
 		Log: LogConfig{
 			Level: strings.ToLower(getEnv("LOG_LEVEL", "development")),
 		},
@@ -88,22 +82,32 @@ func Load() (*Config, error) {
 			PrivateKeyPath: getEnv("JWT_PRIVATE_KEY_PATH", "./keys/private.pem"),
 			PublicKeyPath:  getEnv("JWT_PUBLIC_KEY_PATH", "./keys/public.pem"),
 		},
+	}, nil
+}
+
+// LoadDatabase reads only the DB_* variables and returns a validated
+// DatabaseConfig. The migrator binary uses this directly so it shares the
+// same env var names as the API server and operators only need to set one
+// set of variables.
+func LoadDatabase() (*DatabaseConfig, error) {
+	cfg := &DatabaseConfig{
+		Host:            getEnv("DB_HOST", ""),
+		Port:            getEnv("DB_PORT", ""),
+		User:            getEnv("DB_USER", ""),
+		Password:        getEnv("DB_PASSWORD", ""),
+		Name:            getEnv("DB_NAME", ""),
+		SSLMode:         getEnv("DB_SSLMODE", "require"),
+		MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 100),
+		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 50),
+		ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_MINS", 5)) * time.Minute,
+		ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_MINS", 10)) * time.Minute,
 	}
 
-	if err := cfg.validate(); err != nil {
-		return nil, err
+	if cfg.Host == "" || cfg.Port == "" || cfg.User == "" || cfg.Password == "" || cfg.Name == "" {
+		return nil, fmt.Errorf("missing required database environment variables (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)")
 	}
 
 	return cfg, nil
-}
-
-// validate checks that all required configuration values are present.
-func (c *Config) validate() error {
-	if c.Database.Host == "" || c.Database.Port == "" ||
-		c.Database.User == "" || c.Database.Password == "" || c.Database.Name == "" {
-		return fmt.Errorf("missing required database environment variables (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)")
-	}
-	return nil
 }
 
 // ConnectionString returns the PostgreSQL connection string.

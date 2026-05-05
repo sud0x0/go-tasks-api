@@ -303,7 +303,7 @@ func (r *sqlOccurrenceRepository) getOccurrence(ctx context.Context, id, userID 
 		if errors.Is(err, sql.ErrNoRows) {
 			return TaskOccurrence{}, ErrOccurrenceNotFound
 		}
-		return TaskOccurrence{}, fmt.Errorf("getOccurrence %s: %w", id, ErrDatabase)
+		return TaskOccurrence{}, fmt.Errorf("getOccurrence %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if scheduledTimeStr.Valid {
@@ -311,7 +311,7 @@ func (r *sqlOccurrenceRepository) getOccurrence(ctx context.Context, id, userID 
 	}
 
 	if err := o.Validate(); err != nil {
-		return TaskOccurrence{}, fmt.Errorf("getOccurrence validate %s: %w", id, ErrDatabase)
+		return TaskOccurrence{}, fmt.Errorf("getOccurrence validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return o, nil
 }
@@ -323,7 +323,7 @@ func (r *sqlOccurrenceRepository) getOccurrencesByDate(ctx context.Context, user
 
 	rows, err := r.stmtGetOccurrencesByDate.QueryContext(ctx, userID, date)
 	if err != nil {
-		return nil, fmt.Errorf("getOccurrencesByDate: %w", ErrDatabase)
+		return nil, fmt.Errorf("getOccurrencesByDate: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -337,7 +337,7 @@ func (r *sqlOccurrenceRepository) getOccurrencesByDateRange(ctx context.Context,
 
 	rows, err := r.stmtGetOccurrencesByRange.QueryContext(ctx, userID, startDate, endDate)
 	if err != nil {
-		return nil, fmt.Errorf("getOccurrencesByDateRange: %w", ErrDatabase)
+		return nil, fmt.Errorf("getOccurrencesByDateRange: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -354,7 +354,7 @@ func (r *sqlOccurrenceRepository) scanOccurrences(rows *sql.Rows) ([]TaskOccurre
 			&o.ID, &o.TaskID, &o.ScheduleID, &o.UserID, &o.OccurrenceDate,
 			&scheduledTimeStr, &o.IsSuppressed, &o.CreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scanOccurrences: %w", ErrDatabase)
+			return nil, fmt.Errorf("scanOccurrences: %w: %w", ErrDatabase, err)
 		}
 
 		if scheduledTimeStr.Valid {
@@ -362,13 +362,13 @@ func (r *sqlOccurrenceRepository) scanOccurrences(rows *sql.Rows) ([]TaskOccurre
 		}
 
 		if err := o.Validate(); err != nil {
-			return nil, fmt.Errorf("scanOccurrences validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("scanOccurrences validate: %w: %w", ErrDatabase, err)
 		}
 		occurrences = append(occurrences, o)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scanOccurrences rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("scanOccurrences rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(occurrences) == 0 {
@@ -397,7 +397,7 @@ func (r *sqlOccurrenceRepository) upsertOccurrence(ctx context.Context, taskID, 
 	}
 
 	if err != nil {
-		return TaskOccurrence{}, fmt.Errorf("upsertOccurrence: %w", ErrDatabase)
+		return TaskOccurrence{}, fmt.Errorf("upsertOccurrence: %w: %w", ErrDatabase, err)
 	}
 
 	if scheduledTimeStr.Valid {
@@ -405,7 +405,7 @@ func (r *sqlOccurrenceRepository) upsertOccurrence(ctx context.Context, taskID, 
 	}
 
 	if err := o.Validate(); err != nil {
-		return TaskOccurrence{}, fmt.Errorf("upsertOccurrence validate: %w", ErrDatabase)
+		return TaskOccurrence{}, fmt.Errorf("upsertOccurrence validate: %w: %w", ErrDatabase, err)
 	}
 	return o, nil
 }
@@ -413,12 +413,12 @@ func (r *sqlOccurrenceRepository) upsertOccurrence(ctx context.Context, taskID, 
 func (r *sqlOccurrenceRepository) suppressOccurrence(ctx context.Context, id, userID string) error {
 	result, err := r.stmtSuppressOccurrence.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("suppressOccurrence %s: %w", id, ErrDatabase)
+		return fmt.Errorf("suppressOccurrence %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("suppressOccurrence rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("suppressOccurrence rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -430,12 +430,12 @@ func (r *sqlOccurrenceRepository) suppressOccurrence(ctx context.Context, id, us
 func (r *sqlOccurrenceRepository) unsuppressOccurrence(ctx context.Context, id, userID string) error {
 	result, err := r.stmtUnsuppressOccurrence.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("unsuppressOccurrence %s: %w", id, ErrDatabase)
+		return fmt.Errorf("unsuppressOccurrence %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("unsuppressOccurrence rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("unsuppressOccurrence rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -448,7 +448,7 @@ func (r *sqlOccurrenceRepository) countOccurrences(ctx context.Context, schedule
 	var count int
 	err := r.stmtCountOccurrences.QueryRowContext(ctx, scheduleID, userID).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("countOccurrences %s: %w", scheduleID, ErrDatabase)
+		return 0, fmt.Errorf("countOccurrences %s: %w: %w", scheduleID, ErrDatabase, err)
 	}
 	return count, nil
 }
@@ -463,11 +463,11 @@ func (r *sqlOccurrenceRepository) getAnswer(ctx context.Context, occurrenceID, u
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("getAnswer %s: %w", occurrenceID, ErrDatabase)
+		return nil, fmt.Errorf("getAnswer %s: %w: %w", occurrenceID, ErrDatabase, err)
 	}
 
 	if err := a.Validate(); err != nil {
-		return nil, fmt.Errorf("getAnswer validate %s: %w", occurrenceID, ErrDatabase)
+		return nil, fmt.Errorf("getAnswer validate %s: %w: %w", occurrenceID, ErrDatabase, err)
 	}
 	return &a, nil
 }
@@ -483,11 +483,11 @@ func (r *sqlOccurrenceRepository) upsertAnswer(ctx context.Context, occurrenceID
 		&a.AnswerBoolean, &a.AnswerSelect, &a.AnsweredAt, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
-		return TaskAnswer{}, fmt.Errorf("upsertAnswer: %w", ErrDatabase)
+		return TaskAnswer{}, fmt.Errorf("upsertAnswer: %w: %w", ErrDatabase, err)
 	}
 
 	if err := a.Validate(); err != nil {
-		return TaskAnswer{}, fmt.Errorf("upsertAnswer validate: %w", ErrDatabase)
+		return TaskAnswer{}, fmt.Errorf("upsertAnswer validate: %w: %w", ErrDatabase, err)
 	}
 	return a, nil
 }
@@ -502,11 +502,11 @@ func (r *sqlOccurrenceRepository) getTask(ctx context.Context, taskID, userID st
 		if errors.Is(err, sql.ErrNoRows) {
 			return task.Task{}, ErrOccurrenceNotFound
 		}
-		return task.Task{}, fmt.Errorf("getTask %s: %w", taskID, ErrDatabase)
+		return task.Task{}, fmt.Errorf("getTask %s: %w: %w", taskID, ErrDatabase, err)
 	}
 
 	if err := t.Validate(); err != nil {
-		return task.Task{}, fmt.Errorf("getTask validate %s: %w", taskID, ErrDatabase)
+		return task.Task{}, fmt.Errorf("getTask validate %s: %w: %w", taskID, ErrDatabase, err)
 	}
 	return t, nil
 }
@@ -514,7 +514,7 @@ func (r *sqlOccurrenceRepository) getTask(ctx context.Context, taskID, userID st
 func (r *sqlOccurrenceRepository) getActiveSchedulesByDate(ctx context.Context, userID string, date time.Time) ([]task.Schedule, error) {
 	rows, err := r.stmtGetActiveSchedules.QueryContext(ctx, userID, date)
 	if err != nil {
-		return nil, fmt.Errorf("getActiveSchedulesByDate: %w", ErrDatabase)
+		return nil, fmt.Errorf("getActiveSchedulesByDate: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -529,7 +529,7 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesByDate(ctx context.Context, 
 			&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
 			&s.EndDate, &s.EndAfterN, &s.CreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("getActiveSchedulesByDate scan: %w", ErrDatabase)
+			return nil, fmt.Errorf("getActiveSchedulesByDate scan: %w: %w", ErrDatabase, err)
 		}
 
 		// Parse array strings back to slices
@@ -541,13 +541,13 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesByDate(ctx context.Context, 
 		}
 
 		if err := s.Validate(); err != nil {
-			return nil, fmt.Errorf("getActiveSchedulesByDate validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("getActiveSchedulesByDate validate: %w: %w", ErrDatabase, err)
 		}
 		schedules = append(schedules, s)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getActiveSchedulesByDate rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("getActiveSchedulesByDate rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(schedules) == 0 {
@@ -559,7 +559,7 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesByDate(ctx context.Context, 
 func (r *sqlOccurrenceRepository) getSelectOptions(ctx context.Context, taskID, userID string) ([]task.SelectOption, error) {
 	rows, err := r.stmtGetSelectOptions.QueryContext(ctx, taskID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("getSelectOptions: %w", ErrDatabase)
+		return nil, fmt.Errorf("getSelectOptions: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -567,16 +567,16 @@ func (r *sqlOccurrenceRepository) getSelectOptions(ctx context.Context, taskID, 
 	for rows.Next() {
 		var opt task.SelectOption
 		if err := rows.Scan(&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt); err != nil {
-			return nil, fmt.Errorf("getSelectOptions scan: %w", ErrDatabase)
+			return nil, fmt.Errorf("getSelectOptions scan: %w: %w", ErrDatabase, err)
 		}
 		if err := opt.Validate(); err != nil {
-			return nil, fmt.Errorf("getSelectOptions validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("getSelectOptions validate: %w: %w", ErrDatabase, err)
 		}
 		options = append(options, opt)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getSelectOptions rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("getSelectOptions rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(options) == 0 {
@@ -589,7 +589,7 @@ func (r *sqlOccurrenceRepository) selectOptionExists(ctx context.Context, option
 	var exists bool
 	err := r.stmtCheckSelectOptionExists.QueryRowContext(ctx, optionID, taskID, userID).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("selectOptionExists: %w", ErrDatabase)
+		return false, fmt.Errorf("selectOptionExists: %w: %w", ErrDatabase, err)
 	}
 	return exists, nil
 }
@@ -605,7 +605,7 @@ func (r *sqlOccurrenceRepository) getAnswersByOccurrenceIDs(ctx context.Context,
 
 	rows, err := r.db.QueryContext(ctx, query, occurrenceIDs, userID)
 	if err != nil {
-		return nil, fmt.Errorf("getAnswersByOccurrenceIDs: %w", ErrDatabase)
+		return nil, fmt.Errorf("getAnswersByOccurrenceIDs: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -616,16 +616,16 @@ func (r *sqlOccurrenceRepository) getAnswersByOccurrenceIDs(ctx context.Context,
 			&a.ID, &a.OccurrenceID, &a.UserID, &a.AnswerString, &a.AnswerInteger,
 			&a.AnswerBoolean, &a.AnswerSelect, &a.AnsweredAt, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("getAnswersByOccurrenceIDs scan: %w", ErrDatabase)
+			return nil, fmt.Errorf("getAnswersByOccurrenceIDs scan: %w: %w", ErrDatabase, err)
 		}
 		if err := a.Validate(); err != nil {
-			return nil, fmt.Errorf("getAnswersByOccurrenceIDs validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("getAnswersByOccurrenceIDs validate: %w: %w", ErrDatabase, err)
 		}
 		result[a.OccurrenceID] = &a
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getAnswersByOccurrenceIDs rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("getAnswersByOccurrenceIDs rows: %w: %w", ErrDatabase, err)
 	}
 
 	return result, nil
@@ -643,7 +643,7 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesForRange(ctx context.Context
 
 	rows, err := r.db.QueryContext(ctx, query, userID, startDate, endDate)
 	if err != nil {
-		return nil, fmt.Errorf("getActiveSchedulesForRange: %w", ErrDatabase)
+		return nil, fmt.Errorf("getActiveSchedulesForRange: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -658,7 +658,7 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesForRange(ctx context.Context
 			&s.MonthOfYear, &scheduledTimesStr, &s.StartDate, &s.EndType,
 			&s.EndDate, &s.EndAfterN, &s.CreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("getActiveSchedulesForRange scan: %w", ErrDatabase)
+			return nil, fmt.Errorf("getActiveSchedulesForRange scan: %w: %w", ErrDatabase, err)
 		}
 
 		// Parse array strings back to slices
@@ -670,13 +670,13 @@ func (r *sqlOccurrenceRepository) getActiveSchedulesForRange(ctx context.Context
 		}
 
 		if err := s.Validate(); err != nil {
-			return nil, fmt.Errorf("getActiveSchedulesForRange validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("getActiveSchedulesForRange validate: %w: %w", ErrDatabase, err)
 		}
 		schedules = append(schedules, s)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getActiveSchedulesForRange rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("getActiveSchedulesForRange rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(schedules) == 0 {
@@ -693,12 +693,12 @@ func (r *sqlOccurrenceRepository) bulkDeleteAnswers(ctx context.Context, userID 
 	query := `DELETE FROM task_answers WHERE user_id = $1 AND occurrence_id = ANY($2::uuid[])`
 	result, err := r.db.ExecContext(ctx, query, userID, pq.StringArray(occurrenceIDs))
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeleteAnswers: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeleteAnswers: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeleteAnswers rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeleteAnswers rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil

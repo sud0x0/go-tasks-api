@@ -326,11 +326,11 @@ func (r *sqlTaskRepository) getTask(ctx context.Context, id, userID string) (Tas
 		if errors.Is(err, sql.ErrNoRows) {
 			return Task{}, ErrTaskNotFound
 		}
-		return Task{}, fmt.Errorf("getTask %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("getTask %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := t.Validate(); err != nil {
-		return Task{}, fmt.Errorf("getTask validate %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("getTask validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return t, nil
 }
@@ -342,7 +342,7 @@ func (r *sqlTaskRepository) getTasks(ctx context.Context, userID string, isActiv
 
 	rows, err := r.stmtGetTasks.QueryContext(ctx, userID, isActive, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getTasks: %w", ErrDatabase)
+		return nil, fmt.Errorf("getTasks: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -356,7 +356,7 @@ func (r *sqlTaskRepository) getInactiveTasks(ctx context.Context, userID string,
 
 	rows, err := r.stmtGetInactiveTasks.QueryContext(ctx, userID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getInactiveTasks: %w", ErrDatabase)
+		return nil, fmt.Errorf("getInactiveTasks: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -370,7 +370,7 @@ func (r *sqlTaskRepository) getTasksByCategoryID(ctx context.Context, userID, ca
 
 	rows, err := r.stmtGetTasksByCategoryID.QueryContext(ctx, userID, categoryID, isActive, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getTasksByCategoryID: %w", ErrDatabase)
+		return nil, fmt.Errorf("getTasksByCategoryID: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -385,16 +385,16 @@ func (r *sqlTaskRepository) scanTasks(rows *sql.Rows) ([]Task, error) {
 			&t.ID, &t.UserID, &t.CategoryID, &t.Name, &t.Description,
 			&t.AnswerType, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scanTasks: %w", ErrDatabase)
+			return nil, fmt.Errorf("scanTasks: %w: %w", ErrDatabase, err)
 		}
 		if err := t.Validate(); err != nil {
-			return nil, fmt.Errorf("scanTasks validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("scanTasks validate: %w: %w", ErrDatabase, err)
 		}
 		tasks = append(tasks, t)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scanTasks rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("scanTasks rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(tasks) == 0 {
@@ -420,11 +420,11 @@ func (r *sqlTaskRepository) createTask(ctx context.Context, userID, categoryID, 
 		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeForeignKeyViolation {
 			return Task{}, ErrCategoryNotFound
 		}
-		return Task{}, fmt.Errorf("createTask: %w", ErrDatabase)
+		return Task{}, fmt.Errorf("createTask: %w: %w", ErrDatabase, err)
 	}
 
 	if err := t.Validate(); err != nil {
-		return Task{}, fmt.Errorf("createTask validate: %w", ErrDatabase)
+		return Task{}, fmt.Errorf("createTask validate: %w: %w", ErrDatabase, err)
 	}
 	return t, nil
 }
@@ -445,11 +445,11 @@ func (r *sqlTaskRepository) updateTask(ctx context.Context, id, userID, name str
 		if errors.Is(err, sql.ErrNoRows) {
 			return Task{}, ErrTaskNotFound
 		}
-		return Task{}, fmt.Errorf("updateTask %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("updateTask %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := t.Validate(); err != nil {
-		return Task{}, fmt.Errorf("updateTask validate %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("updateTask validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return t, nil
 }
@@ -461,12 +461,12 @@ func (r *sqlTaskRepository) deactivateTask(ctx context.Context, id, userID strin
 
 	result, err := r.stmtDeactivateTask.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("deactivateTask %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateTask %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("deactivateTask rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateTask rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -479,7 +479,7 @@ func (r *sqlTaskRepository) categoryExists(ctx context.Context, categoryID, user
 	var exists bool
 	err := r.stmtCheckCategoryExists.QueryRowContext(ctx, categoryID, userID).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("categoryExists %s: %w", categoryID, ErrDatabase)
+		return false, fmt.Errorf("categoryExists %s: %w: %w", categoryID, ErrDatabase, err)
 	}
 	return exists, nil
 }
@@ -491,7 +491,7 @@ func (r *sqlTaskRepository) categoryIsActive(ctx context.Context, categoryID, us
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrCategoryNotFound
 		}
-		return false, fmt.Errorf("categoryIsActive %s: %w", categoryID, ErrDatabase)
+		return false, fmt.Errorf("categoryIsActive %s: %w: %w", categoryID, ErrDatabase, err)
 	}
 	return isActive, nil
 }
@@ -503,12 +503,12 @@ func (r *sqlTaskRepository) hardDeleteTask(ctx context.Context, id, userID strin
 
 	result, err := r.stmtHardDeleteTask.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("hardDeleteTask %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteTask %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("hardDeleteTask rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteTask rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -525,12 +525,12 @@ func (r *sqlTaskRepository) bulkDeactivateTasks(ctx context.Context, userID stri
 	query := `UPDATE tasks SET is_active = false, updated_at = NOW() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = true`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateTasks: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateTasks: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateTasks rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateTasks rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -544,12 +544,12 @@ func (r *sqlTaskRepository) bulkHardDeleteTasks(ctx context.Context, userID stri
 	query := `DELETE FROM tasks WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = false`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteTasks: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteTasks: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteTasks rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteTasks rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -569,11 +569,11 @@ func (r *sqlTaskRepository) reactivateTask(ctx context.Context, id, userID strin
 		if errors.Is(err, sql.ErrNoRows) {
 			return Task{}, ErrTaskNotFound
 		}
-		return Task{}, fmt.Errorf("reactivateTask %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("reactivateTask %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := t.Validate(); err != nil {
-		return Task{}, fmt.Errorf("reactivateTask validate %s: %w", id, ErrDatabase)
+		return Task{}, fmt.Errorf("reactivateTask validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return t, nil
 }
@@ -589,7 +589,7 @@ func (r *sqlTaskRepository) getTaskIsActive(ctx context.Context, id, userID stri
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrTaskNotFound
 		}
-		return false, fmt.Errorf("getTaskIsActive %s: %w", id, ErrDatabase)
+		return false, fmt.Errorf("getTaskIsActive %s: %w: %w", id, ErrDatabase, err)
 	}
 	return isActive, nil
 }
@@ -605,7 +605,7 @@ func (r *sqlTaskRepository) getTaskCategoryID(ctx context.Context, id, userID st
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrTaskNotFound
 		}
-		return "", fmt.Errorf("getTaskCategoryID %s: %w", id, ErrDatabase)
+		return "", fmt.Errorf("getTaskCategoryID %s: %w: %w", id, ErrDatabase, err)
 	}
 	return categoryID, nil
 }
@@ -637,7 +637,7 @@ func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedu
 		&s.EndDate, &s.EndAfterN, &s.CreatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("createSchedule: %w", ErrDatabase)
+		return nil, fmt.Errorf("createSchedule: %w: %w", ErrDatabase, err)
 	}
 
 	// Parse array strings back to slices
@@ -649,7 +649,7 @@ func (r *sqlTaskRepository) createSchedule(ctx context.Context, schedule *Schedu
 	}
 
 	if err := s.Validate(); err != nil {
-		return nil, fmt.Errorf("createSchedule validate: %w", ErrDatabase)
+		return nil, fmt.Errorf("createSchedule validate: %w: %w", ErrDatabase, err)
 	}
 	return &s, nil
 }
@@ -668,7 +668,7 @@ func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID, use
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("getScheduleByTaskID %s: %w", taskID, ErrDatabase)
+		return nil, fmt.Errorf("getScheduleByTaskID %s: %w: %w", taskID, ErrDatabase, err)
 	}
 
 	// Parse array strings back to slices
@@ -680,7 +680,7 @@ func (r *sqlTaskRepository) getScheduleByTaskID(ctx context.Context, taskID, use
 	}
 
 	if err := s.Validate(); err != nil {
-		return nil, fmt.Errorf("getScheduleByTaskID validate %s: %w", taskID, ErrDatabase)
+		return nil, fmt.Errorf("getScheduleByTaskID validate %s: %w: %w", taskID, ErrDatabase, err)
 	}
 	return &s, nil
 }
@@ -692,11 +692,11 @@ func (r *sqlTaskRepository) createSelectOption(ctx context.Context, taskID, valu
 		&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt,
 	)
 	if err != nil {
-		return SelectOption{}, fmt.Errorf("createSelectOption: %w", ErrDatabase)
+		return SelectOption{}, fmt.Errorf("createSelectOption: %w: %w", ErrDatabase, err)
 	}
 
 	if err := opt.Validate(); err != nil {
-		return SelectOption{}, fmt.Errorf("createSelectOption validate: %w", ErrDatabase)
+		return SelectOption{}, fmt.Errorf("createSelectOption validate: %w: %w", ErrDatabase, err)
 	}
 	return opt, nil
 }
@@ -704,7 +704,7 @@ func (r *sqlTaskRepository) createSelectOption(ctx context.Context, taskID, valu
 func (r *sqlTaskRepository) getSelectOptionsByTaskID(ctx context.Context, taskID, userID string) ([]SelectOption, error) {
 	rows, err := r.stmtGetSelectOptionsByTaskID.QueryContext(ctx, taskID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("getSelectOptionsByTaskID: %w", ErrDatabase)
+		return nil, fmt.Errorf("getSelectOptionsByTaskID: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -712,16 +712,16 @@ func (r *sqlTaskRepository) getSelectOptionsByTaskID(ctx context.Context, taskID
 	for rows.Next() {
 		var opt SelectOption
 		if err := rows.Scan(&opt.ID, &opt.TaskID, &opt.Value, &opt.Position, &opt.CreatedAt); err != nil {
-			return nil, fmt.Errorf("getSelectOptionsByTaskID scan: %w", ErrDatabase)
+			return nil, fmt.Errorf("getSelectOptionsByTaskID scan: %w: %w", ErrDatabase, err)
 		}
 		if err := opt.Validate(); err != nil {
-			return nil, fmt.Errorf("getSelectOptionsByTaskID validate: %w", ErrDatabase)
+			return nil, fmt.Errorf("getSelectOptionsByTaskID validate: %w: %w", ErrDatabase, err)
 		}
 		options = append(options, opt)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getSelectOptionsByTaskID rows: %w", ErrDatabase)
+		return nil, fmt.Errorf("getSelectOptionsByTaskID rows: %w: %w", ErrDatabase, err)
 	}
 
 	if len(options) == 0 {
@@ -746,7 +746,7 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions begin: %w", ErrDatabase)
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions begin: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -761,10 +761,10 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeForeignKeyViolation {
 			return WithDetails{}, ErrCategoryNotFound
 		}
-		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task: %w", ErrDatabase)
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task: %w: %w", ErrDatabase, err)
 	}
 	if err := t.Validate(); err != nil {
-		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task validate: %w", ErrDatabase)
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions task validate: %w: %w", ErrDatabase, err)
 	}
 
 	result := WithDetails{Task: t}
@@ -797,7 +797,7 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 			&s.EndDate, &s.EndAfterN, &s.CreatedAt,
 		)
 		if err != nil {
-			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule: %w", ErrDatabase)
+			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule: %w: %w", ErrDatabase, err)
 		}
 
 		if daysOfWeekStr.Valid {
@@ -808,7 +808,7 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 		}
 
 		if err := s.Validate(); err != nil {
-			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule validate: %w", ErrDatabase)
+			return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions schedule validate: %w: %w", ErrDatabase, err)
 		}
 		result.Schedule = &s
 	}
@@ -823,10 +823,10 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 				&o.ID, &o.TaskID, &o.Value, &o.Position, &o.CreatedAt,
 			)
 			if err != nil {
-				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option: %w", ErrDatabase)
+				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option: %w: %w", ErrDatabase, err)
 			}
 			if err := o.Validate(); err != nil {
-				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option validate: %w", ErrDatabase)
+				return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions option validate: %w: %w", ErrDatabase, err)
 			}
 			options = append(options, o)
 		}
@@ -834,7 +834,7 @@ func (r *sqlTaskRepository) createTaskWithScheduleAndOptions(
 	}
 
 	if err := tx.Commit(); err != nil {
-		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions commit: %w", ErrDatabase)
+		return WithDetails{}, fmt.Errorf("createTaskWithScheduleAndOptions commit: %w: %w", ErrDatabase, err)
 	}
 
 	return result, nil

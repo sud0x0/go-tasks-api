@@ -130,19 +130,34 @@ release:
   footer: |
     ## Apply migrations, then run the API
 
+    Both binaries read the same `DB_*` environment variables — configure once, use for both.
+
     ```bash
     # Pick the right pair for your platform — example uses linux/amd64.
     chmod +x go-tasks-api-{{ .Version }}_linux_amd64 \
              go-tasks-database-migrator-{{ .Version }}_linux_amd64
 
+    export DB_HOST=db DB_PORT=5432 DB_USER=appuser DB_PASSWORD=... \
+           DB_NAME=appdb DB_SSLMODE=require
+
     # 1. Apply migrations.
-    DATABASE_URL="host=db port=5432 user=$DB_USER password=$DB_PASSWORD dbname=$DB_NAME sslmode=require" \
-        ./go-tasks-database-migrator-{{ .Version }}_linux_amd64 up
+    ./go-tasks-database-migrator-{{ .Version }}_linux_amd64 up
 
     # 2. Run the API.
     ./go-tasks-api-{{ .Version }}_linux_amd64
     ```
 
-    Migrator subcommands: `up`, `up-by-one`, `up-to <v>`, `down`, `down-to <v>`, `redo`, `reset`, `status`, `version`. See the [README](https://github.com/sud0x0/go-tasks-api#getting-started) for required environment variables and RSA key provisioning.
+    Migrator subcommands: `up`, `up-by-one`, `up-to <v>`, `down`, `down-to <v>`, `redo`, `reset`, `status`, `version`. See the [README](https://github.com/sud0x0/go-tasks-api#getting-started) for the full env var list and RSA key provisioning.
 
-    Verify downloads with `sha256sum -c checksums.txt`.
+    ## Verifying downloads
+
+    ```bash
+    # 1. Checksums.
+    sha256sum -c checksums.txt
+
+    # 2. SLSA Level 3 build provenance (install: github.com/slsa-framework/slsa-verifier).
+    slsa-verifier verify-artifact go-tasks-api-{{ .Version }}_linux_amd64 \
+        --provenance-path multiple.intoto.jsonl \
+        --source-uri github.com/sud0x0/go-tasks-api \
+        --source-tag {{ .Tag }}
+    ```

@@ -17,7 +17,8 @@ A task and habit management REST API built with Go. Users register, create recur
 - [Security](#security)
 - [Code Quality](#code-quality)
 - [Make Commands](#make-commands)
-- [TODO](#TODO)
+- [Releases](#releases)
+- [TODO](#todo)
 
 ---
 
@@ -99,13 +100,7 @@ make build    # rebuild from scratch
 
 ## Version
 
-Invoke `./go-tasks-api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture.
-
-Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches two binaries per platform (the API server `go-tasks-api-<version>_<os>_<arch>` and the database migrator `go-tasks-database-migrator-<version>_<os>_<arch>`, Linux/macOS/Windows × amd64/arm64), `checksums.txt`, per-binary SPDX SBOMs, and SLSA Level 3 build provenance to a GitHub Release. Locally, `make prod-build` produces the same cross-compiled binaries under `dist/` without publishing.
-
-**Before pushing a release tag, run `make goreleaser-check`** — it runs `goreleaser check` (config syntax), executes a full snapshot build, replays the workflow's jq filter against the resulting `dist/artifacts.json` to confirm SLSA subjects extract cleanly, and version-banner-tests the native-arch binaries. This catches issues that pure config validation misses (e.g. a malformed jq filter that only manifests when applied to a real `artifacts.json`).
-
-Example:
+Invoke `./go-tasks-api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture. The migrator binary supports the same flag.
 
 ```
 go-tasks-api version 0.1.0
@@ -114,6 +109,8 @@ go-tasks-api version 0.1.0
   Go version: go1.26.2
   OS/Arch:    darwin/arm64
 ```
+
+See [Releases](#releases) for the release pipeline, artefact layout, and download verification.
 
 ---
 
@@ -398,11 +395,12 @@ Migrations in `migrations/`:
 
 **Development:** run migrations with `make db-migrate`. Roll back with `make db-reset`. Check status with `make db-status`. These targets shell into the dev container and invoke the `goose` CLI against the mounted `migrations/` directory.
 
-**Production / release:** each tagged release publishes a `go-tasks-database-migrator-<version>_<os>_<arch>` binary alongside the API binary. The migrator is a self-contained executable — the SQL migrations are embedded into the binary at build time, so it has no external dependency on `goose` or on the migrations directory. Run it before rolling out a new API binary:
+**Production / release:** each tagged release publishes a `go-tasks-database-migrator-<version>_<os>_<arch>` binary alongside the API binary. The migrator is a self-contained executable — the SQL migrations are embedded into the binary at build time, so it has no external dependency on `goose` or on the migrations directory. It reads the same `DB_*` environment variables as the API server so operators only configure one set of variables for both binaries. Run it before rolling out a new API binary:
 
 ```bash
 chmod +x go-tasks-database-migrator-<version>_linux_amd64
-DATABASE_URL="host=db port=5432 user=$DB_USER password=$DB_PASSWORD dbname=$DB_NAME sslmode=require" \
+DB_HOST=db DB_PORT=5432 DB_USER="$DB_USER" DB_PASSWORD="$DB_PASSWORD" \
+DB_NAME="$DB_NAME" DB_SSLMODE=require \
     ./go-tasks-database-migrator-<version>_linux_amd64 up
 ```
 
@@ -470,18 +468,20 @@ make socket      # Socket.dev supply chain scan (requires npm install -g socket)
 Development
   setup            First-time setup: copies .env, installs hooks, builds containers
   build            Build dev containers and run migrations
-  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)
-  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)
   run              Start containers and run migrations
   logs             View application logs
   destroy          Destroy all containers, volumes, and images
-  clean            Delete all temp, build, and test folders
+  clean            Delete all temp, build, test, and release artifacts
 
 Database
   db-migrate       Run pending migrations
   db-reset         Rollback all migrations
   db-status        Check migration status
   db-wait          Wait for database to be ready
+
+Release
+  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)
+  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)
 
 Code Quality
   test             Run all tests
@@ -500,6 +500,93 @@ Typical workflow
   Fresh start: make destroy → make build
   Tidy up:     make clean
 ```
+
+---
+
+## Releases
+
+Tagged releases are automated via GitHub Actions on every `v*` tag push. The workflow (`.github/workflows/release.yml`) performs these steps:
+
+1. Cross-compiles the API server (`go-tasks-api`) and the database migrator (`go-tasks-database-migrator`) for Linux, macOS, and Windows on amd64 + arm64 (Windows arm64 excluded).
+2. Injects the release version, git commit, and build date into the binaries via `-ldflags` so `--version` reports them.
+3. Generates an SPDX-JSON SBOM per binary using [syft](https://github.com/anchore/syft).
+4. Computes SHA-256 checksums for every binary and SBOM into `checksums.txt`.
+5. Publishes a GitHub Release with all binaries, SBOMs, and `checksums.txt`, plus auto-generated changelog grouped by Conventional Commit type.
+6. Generates SLSA Level 3 build provenance via [`slsa-github-generator`](https://github.com/slsa-framework/slsa-github-generator) and attaches `multiple.intoto.jsonl` to the release.
+
+The release does not include a container image. Operators download the API and migrator binaries for their platform, run the migrator against the production database, then start the API.
+
+### Binary Artefacts
+
+Each release publishes a flat set of files (one binary per platform, plus shared metadata):
+
+```
+go-tasks-api-<version>_linux_amd64
+go-tasks-api-<version>_linux_arm64
+go-tasks-api-<version>_darwin_amd64
+go-tasks-api-<version>_darwin_arm64
+go-tasks-api-<version>_windows_amd64.exe
+go-tasks-database-migrator-<version>_linux_amd64
+go-tasks-database-migrator-<version>_linux_arm64
+go-tasks-database-migrator-<version>_darwin_amd64
+go-tasks-database-migrator-<version>_darwin_arm64
+go-tasks-database-migrator-<version>_windows_amd64.exe
+<binary>.sbom.json                 ← one SBOM per binary
+checksums.txt
+multiple.intoto.jsonl              ← SLSA provenance covering every binary
+```
+
+Both binaries are static and have no runtime dependencies. The SQL migrations are embedded into the migrator binary at build time — there is no external `goose` install or migrations directory to mount. The migrator reads the same `DB_*` environment variables as the API server (see [Configuration](#configuration)) so operators only configure one set of variables for both binaries.
+
+Apply migrations, then run the API:
+
+```bash
+chmod +x go-tasks-api-<version>_linux_amd64 \
+         go-tasks-database-migrator-<version>_linux_amd64
+
+export DB_HOST=db DB_PORT=5432 DB_USER=appuser DB_PASSWORD=... \
+       DB_NAME=appdb DB_SSLMODE=require
+
+# 1. Apply migrations.
+./go-tasks-database-migrator-<version>_linux_amd64 up
+
+# 2. Run the API.
+./go-tasks-api-<version>_linux_amd64
+```
+
+### Verifying Downloads
+
+Validate SHA-256 and SLSA provenance before running:
+
+```bash
+# 1. Verify checksums for everything you downloaded.
+sha256sum -c checksums.txt --ignore-missing
+
+# 2. Verify the SLSA build provenance.
+#    Install: go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+slsa-verifier verify-artifact go-tasks-api-<version>_linux_amd64 \
+    --provenance-path multiple.intoto.jsonl \
+    --source-uri github.com/sud0x0/go-tasks-api \
+    --source-tag v<version>
+```
+
+A successful provenance check confirms the binary was built from this repository at the specified tag by the release workflow — not tampered with after upload, not built from a fork, not produced by a different workflow. Run the same `slsa-verifier` command against the migrator binary too.
+
+### Production Operator Notes
+
+- **RSA keys.** Generate the JWT signing keypair out-of-band and mount it as a read-only volume / secret. The API auto-generates keys on first run if the files are missing, which invalidates issued tokens across replicas/restarts if the filesystem is not persistent.
+- **Migrate first.** Run the database migrator against the production database before deploying a new API binary — the API refuses to start if required tables are missing.
+- **Restrict `/metrics`.** The Prometheus endpoint has no authentication. Block it at the ingress / reverse proxy in production.
+
+### Local Validation
+
+Run `make goreleaser-check` to validate the release pipeline locally before pushing a tag. It runs `goreleaser check`, executes a full snapshot build, replays the workflow's jq filter against the resulting `dist/artifacts.json` to confirm SLSA subjects extract cleanly, and version-banner-tests the native-arch binaries. This catches issues pure config validation misses (e.g. a malformed jq filter that only manifests when applied to a real `artifacts.json`).
+
+Requires [goreleaser](https://goreleaser.com/install/), `jq`, and (optionally) [syft](https://github.com/anchore/syft#installation) for the SBOM step.
+
+For a quicker smoke test that just produces snapshot binaries under `dist/` without the SLSA / version-banner steps, run `make prod-build`.
+
+---
 
 ## TODO
 

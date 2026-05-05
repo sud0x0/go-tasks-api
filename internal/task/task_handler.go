@@ -62,6 +62,10 @@ func (h *Handler) handleError(ctx context.Context, w http.ResponseWriter, err er
 	switch {
 	case errors.Is(err, ErrDatabase):
 		log.LogError(ErrDatabase, err)
+		if shared.IsDBUnavailable(err) {
+			shared.WriteErrorJSON(w, "service temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		shared.WriteErrorJSON(w, "database error occurred", http.StatusInternalServerError)
 	case errors.Is(err, ErrUnauthorised):
 		shared.WriteUnauthorised(w)

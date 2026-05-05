@@ -80,7 +80,16 @@ func (h *Handler) handleError(ctx context.Context, w http.ResponseWriter, err er
 
 	switch {
 	case errors.Is(err, ErrDatabase):
+		// Connection-level failures (DB unreachable / dial errors / broken pool conn)
+		// are surfaced as 503 so operators can distinguish "the database is down" from
+		// "the API talked to the database but the query failed". Query-level problems
+		// (missing table, permission denied, constraint violation) stay as 500 — the
+		// underlying pgx error is preserved in the wrapped chain and logged below.
 		log.LogError(ErrDatabase, err)
+		if shared.IsDBUnavailable(err) {
+			shared.WriteErrorJSON(w, "service temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		shared.WriteErrorJSON(w, "database error occurred", http.StatusInternalServerError)
 	case errors.Is(err, ErrUserExists):
 		shared.WriteErrorJSON(w, "username already exists", http.StatusConflict)

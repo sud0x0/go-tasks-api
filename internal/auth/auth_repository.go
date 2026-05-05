@@ -147,11 +147,11 @@ func (r *sqlAuthRepository) getUserByID(ctx context.Context, id string) (User, e
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrUserNotFound
 		}
-		return User{}, fmt.Errorf("getUserByID %s: %w", id, ErrDatabase)
+		return User{}, fmt.Errorf("getUserByID %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := user.Validate(); err != nil {
-		return User{}, fmt.Errorf("getUserByID validate %s: %w", id, ErrDatabase)
+		return User{}, fmt.Errorf("getUserByID validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return user, nil
 }
@@ -170,11 +170,11 @@ func (r *sqlAuthRepository) getUserByUsername(ctx context.Context, username stri
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrUserNotFound
 		}
-		return User{}, fmt.Errorf("getUserByUsername: %w", ErrDatabase)
+		return User{}, fmt.Errorf("getUserByUsername: %w: %w", ErrDatabase, err)
 	}
 
 	if err := user.Validate(); err != nil {
-		return User{}, fmt.Errorf("getUserByUsername validate: %w", ErrDatabase)
+		return User{}, fmt.Errorf("getUserByUsername validate: %w: %w", ErrDatabase, err)
 	}
 	return user, nil
 }
@@ -197,11 +197,11 @@ func (r *sqlAuthRepository) createUser(ctx context.Context, username, passwordHa
 		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeUniqueViolation {
 			return User{}, ErrUserExists
 		}
-		return User{}, fmt.Errorf("createUser: %w", ErrDatabase)
+		return User{}, fmt.Errorf("createUser: %w: %w", ErrDatabase, err)
 	}
 
 	if err := user.Validate(); err != nil {
-		return User{}, fmt.Errorf("createUser validate: %w", ErrDatabase)
+		return User{}, fmt.Errorf("createUser validate: %w: %w", ErrDatabase, err)
 	}
 	return user, nil
 }
@@ -217,11 +217,11 @@ func (r *sqlAuthRepository) createRefreshToken(ctx context.Context, userID, toke
 		&token.ExpiresAt, &token.CreatedAt,
 	)
 	if err != nil {
-		return RefreshToken{}, fmt.Errorf("createRefreshToken: %w", ErrDatabase)
+		return RefreshToken{}, fmt.Errorf("createRefreshToken: %w: %w", ErrDatabase, err)
 	}
 
 	if err := token.Validate(); err != nil {
-		return RefreshToken{}, fmt.Errorf("createRefreshToken validate: %w", ErrDatabase)
+		return RefreshToken{}, fmt.Errorf("createRefreshToken validate: %w: %w", ErrDatabase, err)
 	}
 	return token, nil
 }
@@ -240,11 +240,11 @@ func (r *sqlAuthRepository) getRefreshTokenByHash(ctx context.Context, tokenHash
 		if errors.Is(err, sql.ErrNoRows) {
 			return RefreshToken{}, ErrInvalidToken
 		}
-		return RefreshToken{}, fmt.Errorf("getRefreshTokenByHash: %w", ErrDatabase)
+		return RefreshToken{}, fmt.Errorf("getRefreshTokenByHash: %w: %w", ErrDatabase, err)
 	}
 
 	if err := token.Validate(); err != nil {
-		return RefreshToken{}, fmt.Errorf("getRefreshTokenByHash validate: %w", ErrDatabase)
+		return RefreshToken{}, fmt.Errorf("getRefreshTokenByHash validate: %w: %w", ErrDatabase, err)
 	}
 	return token, nil
 }
@@ -256,7 +256,7 @@ func (r *sqlAuthRepository) deleteRefreshToken(ctx context.Context, tokenHash st
 
 	_, err := r.stmtDeleteToken.ExecContext(ctx, tokenHash)
 	if err != nil {
-		return fmt.Errorf("deleteRefreshToken: %w", ErrDatabase)
+		return fmt.Errorf("deleteRefreshToken: %w: %w", ErrDatabase, err)
 	}
 	return nil
 }
@@ -270,12 +270,12 @@ func (r *sqlAuthRepository) deleteRefreshTokenForUser(ctx context.Context, token
 
 	result, err := r.stmtDeleteTokenForUser.ExecContext(ctx, tokenHash, userID)
 	if err != nil {
-		return fmt.Errorf("deleteRefreshTokenForUser: %w", ErrDatabase)
+		return fmt.Errorf("deleteRefreshTokenForUser: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("deleteRefreshTokenForUser rows: %w", ErrDatabase)
+		return fmt.Errorf("deleteRefreshTokenForUser rows: %w: %w", ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -289,7 +289,7 @@ func (r *sqlAuthRepository) deleteRefreshTokenForUser(ctx context.Context, token
 func (r *sqlAuthRepository) deleteUserRefreshTokens(ctx context.Context, userID string) error {
 	_, err := r.stmtDeleteUserTokens.ExecContext(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("deleteUserRefreshTokens: %w", ErrDatabase)
+		return fmt.Errorf("deleteUserRefreshTokens: %w: %w", ErrDatabase, err)
 	}
 	return nil
 }
@@ -297,7 +297,7 @@ func (r *sqlAuthRepository) deleteUserRefreshTokens(ctx context.Context, userID 
 func (r *sqlAuthRepository) CleanExpiredTokens(ctx context.Context) error {
 	_, err := r.stmtCleanExpiredTokens.ExecContext(ctx)
 	if err != nil {
-		return fmt.Errorf("CleanExpiredTokens: %w", ErrDatabase)
+		return fmt.Errorf("CleanExpiredTokens: %w: %w", ErrDatabase, err)
 	}
 	return nil
 }

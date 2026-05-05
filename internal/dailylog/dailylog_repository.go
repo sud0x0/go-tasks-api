@@ -172,11 +172,11 @@ func (r *sqlDailyLogRepository) getDailyLog(ctx context.Context, id, userID stri
 		if errors.Is(err, sql.ErrNoRows) {
 			return DailyLog{}, ErrDailyLogNotFound
 		}
-		return DailyLog{}, fmt.Errorf("getDailyLog %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("getDailyLog %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := d.Validate(); err != nil {
-		return DailyLog{}, fmt.Errorf("getDailyLog validate %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("getDailyLog validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return d, nil
 }
@@ -195,11 +195,11 @@ func (r *sqlDailyLogRepository) getDailyLogByDate(ctx context.Context, userID st
 		if errors.Is(err, sql.ErrNoRows) {
 			return DailyLog{}, ErrDailyLogNotFound
 		}
-		return DailyLog{}, fmt.Errorf("getDailyLogByDate: %w", ErrDatabase)
+		return DailyLog{}, fmt.Errorf("getDailyLogByDate: %w: %w", ErrDatabase, err)
 	}
 
 	if err := d.Validate(); err != nil {
-		return DailyLog{}, fmt.Errorf("getDailyLogByDate validate: %w", ErrDatabase)
+		return DailyLog{}, fmt.Errorf("getDailyLogByDate validate: %w: %w", ErrDatabase, err)
 	}
 	return d, nil
 }
@@ -211,7 +211,7 @@ func (r *sqlDailyLogRepository) getDailyLogsByDateRange(ctx context.Context, use
 
 	rows, err := r.stmtGetDailyLogsByRange.QueryContext(ctx, userID, startDate, endDate)
 	if err != nil {
-		return nil, fmt.Errorf("getDailyLogsByDateRange: %w", ErrDatabase)
+		return nil, fmt.Errorf("getDailyLogsByDateRange: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -225,7 +225,7 @@ func (r *sqlDailyLogRepository) getInactiveDailyLogs(ctx context.Context, userID
 
 	rows, err := r.stmtGetInactiveDailyLogs.QueryContext(ctx, userID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("getInactiveDailyLogs: %w", ErrDatabase)
+		return nil, fmt.Errorf("getInactiveDailyLogs: %w: %w", ErrDatabase, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -240,16 +240,16 @@ func (r *sqlDailyLogRepository) scanDailyLogs(rows *sql.Rows, methodName string)
 			&d.ID, &d.UserID, &d.LogDate, &d.Entry, &d.IsActive,
 			&d.CreatedAt, &d.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("%s scan: %w", methodName, ErrDatabase)
+			return nil, fmt.Errorf("%s scan: %w: %w", methodName, ErrDatabase, err)
 		}
 		if err := d.Validate(); err != nil {
-			return nil, fmt.Errorf("%s validate: %w", methodName, ErrDatabase)
+			return nil, fmt.Errorf("%s validate: %w: %w", methodName, ErrDatabase, err)
 		}
 		logs = append(logs, d)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s rows: %w", methodName, ErrDatabase)
+		return nil, fmt.Errorf("%s rows: %w: %w", methodName, ErrDatabase, err)
 	}
 
 	if len(logs) == 0 {
@@ -275,11 +275,11 @@ func (r *sqlDailyLogRepository) createDailyLog(ctx context.Context, userID strin
 		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeUniqueViolation {
 			return DailyLog{}, ErrDailyLogExists
 		}
-		return DailyLog{}, fmt.Errorf("createDailyLog: %w", ErrDatabase)
+		return DailyLog{}, fmt.Errorf("createDailyLog: %w: %w", ErrDatabase, err)
 	}
 
 	if err := d.Validate(); err != nil {
-		return DailyLog{}, fmt.Errorf("createDailyLog validate: %w", ErrDatabase)
+		return DailyLog{}, fmt.Errorf("createDailyLog validate: %w: %w", ErrDatabase, err)
 	}
 	return d, nil
 }
@@ -300,11 +300,11 @@ func (r *sqlDailyLogRepository) updateDailyLog(ctx context.Context, id, userID, 
 		if errors.Is(err, sql.ErrNoRows) {
 			return DailyLog{}, ErrDailyLogNotFound
 		}
-		return DailyLog{}, fmt.Errorf("updateDailyLog %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("updateDailyLog %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := d.Validate(); err != nil {
-		return DailyLog{}, fmt.Errorf("updateDailyLog validate %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("updateDailyLog validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return d, nil
 }
@@ -316,12 +316,12 @@ func (r *sqlDailyLogRepository) deactivateDailyLog(ctx context.Context, id, user
 
 	result, err := r.stmtDeactivateDailyLog.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("deactivateDailyLog %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateDailyLog %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("deactivateDailyLog rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("deactivateDailyLog rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -337,12 +337,12 @@ func (r *sqlDailyLogRepository) hardDeleteDailyLog(ctx context.Context, id, user
 
 	result, err := r.stmtHardDeleteDailyLog.ExecContext(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("hardDeleteDailyLog %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteDailyLog %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("hardDeleteDailyLog rowsAffected %s: %w", id, ErrDatabase)
+		return fmt.Errorf("hardDeleteDailyLog rowsAffected %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if rowsAffected == 0 {
@@ -359,12 +359,12 @@ func (r *sqlDailyLogRepository) bulkDeactivateDailyLogs(ctx context.Context, use
 	query := `UPDATE daily_logs SET is_active = false, updated_at = NOW() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = true`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateDailyLogs: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateDailyLogs: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkDeactivateDailyLogs rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkDeactivateDailyLogs rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -378,12 +378,12 @@ func (r *sqlDailyLogRepository) bulkHardDeleteDailyLogs(ctx context.Context, use
 	query := `DELETE FROM daily_logs WHERE user_id = $1 AND id = ANY($2::uuid[]) AND is_active = false`
 	result, err := r.db.ExecContext(ctx, query, userID, ids)
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteDailyLogs: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteDailyLogs: %w: %w", ErrDatabase, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("bulkHardDeleteDailyLogs rowsAffected: %w", ErrDatabase)
+		return 0, fmt.Errorf("bulkHardDeleteDailyLogs rowsAffected: %w: %w", ErrDatabase, err)
 	}
 
 	return int(rowsAffected), nil
@@ -403,11 +403,11 @@ func (r *sqlDailyLogRepository) reactivateDailyLog(ctx context.Context, id, user
 		if errors.Is(err, sql.ErrNoRows) {
 			return DailyLog{}, ErrDailyLogNotFound
 		}
-		return DailyLog{}, fmt.Errorf("reactivateDailyLog %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("reactivateDailyLog %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	if err := d.Validate(); err != nil {
-		return DailyLog{}, fmt.Errorf("reactivateDailyLog validate %s: %w", id, ErrDatabase)
+		return DailyLog{}, fmt.Errorf("reactivateDailyLog validate %s: %w: %w", id, ErrDatabase, err)
 	}
 	return d, nil
 }
@@ -425,7 +425,7 @@ func (r *sqlDailyLogRepository) getDailyLogIsActive(ctx context.Context, id, use
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrDailyLogNotFound
 		}
-		return false, fmt.Errorf("getDailyLogIsActive %s: %w", id, ErrDatabase)
+		return false, fmt.Errorf("getDailyLogIsActive %s: %w: %w", id, ErrDatabase, err)
 	}
 
 	return isActive, nil

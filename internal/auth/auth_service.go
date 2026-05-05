@@ -206,7 +206,7 @@ func (s *defaultAuthService) refresh(ctx context.Context, refreshToken string, o
 
 	// Delete the old token (rotation)
 	if err := s.repo.deleteRefreshToken(ctx, tokenHash); err != nil {
-		return TokenResponse{}, fmt.Errorf("refresh delete: %w", ErrDatabase)
+		return TokenResponse{}, fmt.Errorf("refresh delete: %w", err)
 	}
 
 	// Blocklist the old access token's JTI if provided

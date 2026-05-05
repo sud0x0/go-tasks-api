@@ -7,25 +7,31 @@ COMPOSE_FILE=compose.dev.yaml
 DB_CONTAINER=app_db
 APP_CONTAINER=app_api
 
-# --- Version metadata ------------------------------------------------
+# --- Release artefact metadata --------------------------------------------
+#
+# Production releases are cut by pushing a `v*` tag — .github/workflows/release.yml
+# runs goreleaser end-to-end: cross-compiles the api + migrator binaries,
+# generates SPDX-JSON SBOMs, computes SHA-256 checksums, and publishes a
+# GitHub Release with SLSA Level 3 build provenance.
+#
+# `make prod-build` reproduces the snapshot bundle locally (without publishing
+# or signing); useful for smoke-testing the build before tagging.
+# `make goreleaser-check` runs the full pipeline the CI workflow performs,
+# so you can validate everything before pushing a release tag.
 #
 # Version is bumped manually. Commit SHA and build date are captured at
 # build time. All three are injected into internal/version via -ldflags.
-# The -s -w flags strip debug info and symbol table (standard for release).
-# The -trimpath flag removes local path info for reproducibility.
-#
-# Production releases are driven by GoReleaser (see .goreleaser.yaml and
-# .github/workflows/release.yml). VERSION here is only used for the snapshot
-# label printed by `make prod-build`; the real version on a tagged release is
-# the git tag.
-VERSION     ?= 0.1.0
-# ---------------------------------------------------------------------
+# VERSION here is only used for the snapshot label printed by `make prod-build`;
+# the real version on a tagged release is the git tag.
+VERSION ?= 0.1.0
+# --------------------------------------------------------------------------
 
-.PHONY: setup build prod-build goreleaser-check run stop logs destroy clean \
-        db-migrate db-reset db-status db-wait \
-        test test-pretty \
-        lint fmt vet \
-        pre-commit-install pre-commit-run vulncheck semgrep socket \
+.PHONY: setup pre-commit-install \
+        build run logs destroy clean \
+        db-wait db-migrate db-reset db-status \
+        prod-build goreleaser-check \
+        test test-pretty lint fmt vet \
+        pre-commit-run vulncheck semgrep socket \
         help
 
 # ============================================================================
@@ -45,7 +51,9 @@ setup:
 	@echo ""
 	@echo "Setup complete. Run 'make help' to see available commands."
 
-# Install and warm up pre-commit hooks
+# Install and warm up pre-commit hooks. The commit-msg hook is installed in
+# addition to the default pre-commit hook so Conventional Commits enforcement
+# kicks in on commit messages, not just staged files.
 pre-commit-install:
 	@echo "Installing pre-commit hooks..."
 	@pre-commit install
@@ -70,89 +78,6 @@ build:
 	@podman-compose -f $(COMPOSE_FILE) restart app
 	@echo "Build complete. Application running at http://localhost:8080"
 	@echo "Use 'make logs' to view application logs."
-
-# Build a local snapshot of the production release using GoReleaser.
-# Produces cross-compiled binaries and archives under dist/ — Linux, macOS,
-# and Windows for amd64 and arm64. Skips the container build (so podman
-# users don't need to alias `podman` as `docker`) and never publishes.
-#
-# A real tagged release is cut by pushing a tag — the GitHub Actions
-# workflow at .github/workflows/release.yml runs `goreleaser release`
-# end-to-end, including the multi-arch container image push to ghcr.io.
-#
-# Requires goreleaser installed locally: https://goreleaser.com/install/
-#
-# Runtime reminders for whoever runs the published binaries:
-#   - Generate RSA keys out-of-band and mount as a read-only volume/secret;
-#     the binary auto-generates keys on first run, which invalidates tokens
-#     across replicas/restarts if the filesystem isn't persistent.
-#   - Run the database migrator against the prod DB before deploying a new
-#     API binary (the API refuses to start if required tables are missing).
-#   - Pass DB_*, VALKEY_URL, JWT_*, CORS_ALLOWED_ORIGINS via --env-file or
-#     orchestrator secrets.
-#   - Block /metrics at the ingress / reverse proxy in production.
-prod-build:
-	@command -v goreleaser >/dev/null 2>&1 || { \
-		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
-		exit 1; \
-	}
-	@echo "Building snapshot release..."
-	@goreleaser release --snapshot --clean --skip=sbom
-	@echo ""
-	@echo "Snapshot artefacts written to dist/. (SBOM generation skipped — install syft to include it.)"
-	@echo "To cut a real release: git tag vX.Y.Z && git push --tags"
-
-# Validate the release pipeline end-to-end against a local snapshot. Runs
-# everything that doesn't require pushing: config syntax check, full snapshot
-# build, the same jq subjects-extraction the CI workflow performs, and a
-# version-banner smoke test on the native-arch binaries. Catches issues that
-# `goreleaser check` alone misses — for example, a malformed jq filter that
-# only manifests when applied to a real dist/artifacts.json.
-#
-# Run this before pushing a release tag.
-goreleaser-check:
-	@command -v goreleaser >/dev/null 2>&1 || { \
-		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
-		exit 1; \
-	}
-	@command -v jq >/dev/null 2>&1 || { \
-		echo "jq not found. Install jq for the subjects-extraction step."; \
-		exit 1; \
-	}
-	@echo "==> Validating goreleaser config..."
-	@goreleaser check
-	@echo ""
-	@echo "==> Building full snapshot release..."
-	@if command -v syft >/dev/null 2>&1; then \
-		goreleaser release --snapshot --clean; \
-	else \
-		echo "(syft not installed — skipping SBOM step)"; \
-		goreleaser release --snapshot --clean --skip=sbom; \
-	fi
-	@echo ""
-	@echo "==> Verifying SLSA subject extraction matches the workflow filter..."
-	@HASHES=$$(jq -r '.[] | select(.type=="Binary" and .extra.Checksum != null) | "\(.extra.Checksum | sub("^sha256:"; ""))  \(.name)"' dist/artifacts.json); \
-	COUNT=$$(printf '%s\n' "$$HASHES" | grep -c .); \
-	if [ "$$COUNT" -eq 0 ]; then \
-		echo "FAIL: jq filter produced no Binary subjects — check .github/workflows/release.yml"; \
-		exit 1; \
-	fi; \
-	echo "OK: $$COUNT subjects extracted:"; \
-	printf '%s\n' "$$HASHES" | sed 's/^/    /'
-	@echo ""
-	@echo "==> Smoke-testing native-arch binaries..."
-	@HOST_OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	HOST_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'); \
-	API_DIR=$$(find dist -maxdepth 1 -type d -name "api_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
-	MIG_DIR=$$(find dist -maxdepth 1 -type d -name "migrator_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
-	if [ -z "$$API_DIR" ] || [ -z "$$MIG_DIR" ]; then \
-		echo "WARN: no native-arch build found for $$HOST_OS/$$HOST_ARCH — skipping binary smoke test"; \
-	else \
-		"$$API_DIR/go-tasks-api" --version >/dev/null && echo "OK: go-tasks-api --version"; \
-		"$$MIG_DIR/go-tasks-database-migrator" --version >/dev/null && echo "OK: go-tasks-database-migrator --version"; \
-	fi
-	@echo ""
-	@echo "All goreleaser checks passed. Safe to push a release tag."
 
 # Start containers and run migrations
 run:
@@ -224,6 +149,94 @@ db-status:
 		"host=$$DB_HOST port=$$DB_PORT user=$$DB_USER password=$$DB_PASSWORD dbname=$$DB_NAME sslmode=$$DB_SSLMODE" status'
 
 # ============================================================================
+# Release
+# ============================================================================
+
+# Build a local snapshot of the production release using GoReleaser.
+# Produces cross-compiled binaries and archives under dist/ — Linux, macOS,
+# and Windows for amd64 and arm64. Skips the SBOM step (so syft isn't required)
+# and never publishes.
+#
+# A real tagged release is cut by pushing a tag — the GitHub Actions
+# workflow at .github/workflows/release.yml runs `goreleaser release`
+# end-to-end, including SBOM generation and SLSA Level 3 provenance.
+#
+# Requires goreleaser installed locally: https://goreleaser.com/install/
+#
+# Runtime reminders for whoever runs the published binaries:
+#   - Generate RSA keys out-of-band and mount as a read-only volume/secret;
+#     the binary auto-generates keys on first run, which invalidates tokens
+#     across replicas/restarts if the filesystem isn't persistent.
+#   - Run the database migrator against the prod DB before deploying a new
+#     API binary (the API refuses to start if required tables are missing).
+#   - Pass DB_*, VALKEY_URL, JWT_*, CORS_ALLOWED_ORIGINS via --env-file or
+#     orchestrator secrets.
+#   - Block /metrics at the ingress / reverse proxy in production.
+prod-build:
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
+		exit 1; \
+	}
+	@echo "Building snapshot release..."
+	@goreleaser release --snapshot --clean --skip=sbom
+	@echo ""
+	@echo "Snapshot artefacts written to dist/. (SBOM generation skipped — install syft to include it.)"
+	@echo "To cut a real release: git tag vX.Y.Z && git push --tags"
+
+# Validate the release pipeline end-to-end against a local snapshot. Mirrors
+# the steps in .github/workflows/release.yml (config check, full snapshot
+# build, SLSA subjects extraction via the workflow's jq filter, version-banner
+# smoke test on native-arch binaries) so you can catch issues before pushing
+# a tag. Catches issues that `goreleaser check` alone misses — for example,
+# a malformed jq filter that only manifests when applied to a real
+# dist/artifacts.json.
+#
+# Run this before pushing a release tag.
+goreleaser-check:
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
+		exit 1; \
+	}
+	@command -v jq >/dev/null 2>&1 || { \
+		echo "jq not found. Install jq for the subjects-extraction step."; \
+		exit 1; \
+	}
+	@echo "==> Validating goreleaser config..."
+	@goreleaser check
+	@echo ""
+	@echo "==> Building full snapshot release..."
+	@if command -v syft >/dev/null 2>&1; then \
+		goreleaser release --snapshot --clean; \
+	else \
+		echo "(syft not installed — skipping SBOM step)"; \
+		goreleaser release --snapshot --clean --skip=sbom; \
+	fi
+	@echo ""
+	@echo "==> Verifying SLSA subject extraction matches the workflow filter..."
+	@HASHES=$$(jq -r '.[] | select(.type=="Binary" and .extra.Checksum != null) | "\(.extra.Checksum | sub("^sha256:"; ""))  \(.name)"' dist/artifacts.json); \
+	COUNT=$$(printf '%s\n' "$$HASHES" | grep -c .); \
+	if [ "$$COUNT" -eq 0 ]; then \
+		echo "FAIL: jq filter produced no Binary subjects — check .github/workflows/release.yml"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$COUNT subjects extracted:"; \
+	printf '%s\n' "$$HASHES" | sed 's/^/    /'
+	@echo ""
+	@echo "==> Smoke-testing native-arch binaries..."
+	@HOST_OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	HOST_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'); \
+	API_DIR=$$(find dist -maxdepth 1 -type d -name "api_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
+	MIG_DIR=$$(find dist -maxdepth 1 -type d -name "migrator_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
+	if [ -z "$$API_DIR" ] || [ -z "$$MIG_DIR" ]; then \
+		echo "WARN: no native-arch build found for $$HOST_OS/$$HOST_ARCH — skipping binary smoke test"; \
+	else \
+		"$$API_DIR/go-tasks-api" --version >/dev/null && echo "OK: go-tasks-api --version"; \
+		"$$MIG_DIR/go-tasks-database-migrator" --version >/dev/null && echo "OK: go-tasks-database-migrator --version"; \
+	fi
+	@echo ""
+	@echo "All goreleaser checks passed. Safe to push a release tag."
+
+# ============================================================================
 # Code quality
 # ============================================================================
 
@@ -271,16 +284,14 @@ socket:
 
 help:
 	@echo ""
-	@echo "Development Commands"
-	@echo "--------------------"
+	@echo "Development"
+	@echo "-----------"
 	@echo "  setup            First-time setup: copies .env, installs hooks, builds containers"
 	@echo "  build            Build dev containers and run migrations"
-	@echo "  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)"
-	@echo "  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)"
 	@echo "  run              Start containers and run migrations"
 	@echo "  logs             View application logs"
 	@echo "  destroy          Destroy all containers, volumes, and images"
-	@echo "  clean            Delete all temp, build, and test folders"
+	@echo "  clean            Delete all temp, build, test, and release artifacts"
 	@echo ""
 	@echo "Database"
 	@echo "--------"
@@ -288,6 +299,11 @@ help:
 	@echo "  db-reset         Rollback all migrations"
 	@echo "  db-status        Check migration status"
 	@echo "  db-wait          Wait for database to be ready"
+	@echo ""
+	@echo "Release"
+	@echo "-------"
+	@echo "  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)"
+	@echo "  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)"
 	@echo ""
 	@echo "Code Quality"
 	@echo "------------"

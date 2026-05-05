@@ -2,6 +2,9 @@
 // into this binary against a Postgres database. The migrations are embedded
 // at build time from the project's migrations/ directory, so this binary
 // requires no external goose install or SQL file mount at deploy time.
+//
+// Database connection variables are the same DB_* set used by the API
+// server — operators only configure one set of variables for both binaries.
 package main
 
 import (
@@ -16,6 +19,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"go-tasks-api/internal/config"
 	"go-tasks-api/internal/version"
 	"go-tasks-api/migrations"
 )
@@ -23,8 +27,14 @@ import (
 const usage = `go-tasks-database-migrator — apply schema migrations bundled into this binary.
 
 Usage:
-    DATABASE_URL="host=db port=5432 user=... password=... dbname=... sslmode=require" \
-        go-tasks-database-migrator <command> [args...]
+    DB_HOST=db DB_PORT=5432 DB_USER=appuser DB_PASSWORD=... DB_NAME=appdb \
+        DB_SSLMODE=require go-tasks-database-migrator <command> [args...]
+
+Required environment variables (same as the API server):
+    DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+
+Optional:
+    DB_SSLMODE   defaults to "require"
 
 Commands (passed through to goose):
     up                    apply all pending migrations
@@ -54,13 +64,13 @@ func main() {
 		return
 	}
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		fmt.Fprintln(os.Stderr, "DATABASE_URL is required (e.g. \"host=db port=5432 user=... password=... dbname=... sslmode=require\")")
+	dbCfg, err := config.LoadDatabase()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", dbCfg.ConnectionString())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)

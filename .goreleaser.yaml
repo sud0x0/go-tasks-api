@@ -80,6 +80,9 @@ snapshot:
 changelog:
   sort: asc
   use: github
+  # Override the default "<sha>: <message> (<author> <email>)" rendering —
+  # we don't want author names/emails in the public release notes.
+  format: "{{.SHA}}: {{.Message}}"
   filters:
     exclude:
       - '^docs:'

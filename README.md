@@ -101,7 +101,9 @@ make build    # rebuild from scratch
 
 Invoke `./go-tasks-api --version` (or `-v`) to print the binary's version information. The output includes the release version, git commit, build date, Go toolchain version, and target OS/architecture.
 
-Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches two binaries per platform (the API server `go-tasks-api-<version>_<os>_<arch>` and the database migrator `go-tasks-database-migrator-<version>_<os>_<arch>`, Linux/macOS/Windows × amd64/arm64), `checksums.txt`, per-binary SPDX SBOMs, and SLSA Level 3 build provenance to a GitHub Release. Locally, `goreleaser release --snapshot --clean` produces the same cross-compiled binaries under `dist/` without publishing.
+Tagged releases are produced by GoReleaser via `.github/workflows/release.yml` — push a tag and the workflow attaches two binaries per platform (the API server `go-tasks-api-<version>_<os>_<arch>` and the database migrator `go-tasks-database-migrator-<version>_<os>_<arch>`, Linux/macOS/Windows × amd64/arm64), `checksums.txt`, per-binary SPDX SBOMs, and SLSA Level 3 build provenance to a GitHub Release. Locally, `make prod-build` produces the same cross-compiled binaries under `dist/` without publishing.
+
+**Before pushing a release tag, run `make goreleaser-check`** — it runs `goreleaser check` (config syntax), executes a full snapshot build, replays the workflow's jq filter against the resulting `dist/artifacts.json` to confirm SLSA subjects extract cleanly, and version-banner-tests the native-arch binaries. This catches issues that pure config validation misses (e.g. a malformed jq filter that only manifests when applied to a real `artifacts.json`).
 
 Example:
 
@@ -469,6 +471,7 @@ Development
   setup            First-time setup: copies .env, installs hooks, builds containers
   build            Build dev containers and run migrations
   prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)
+  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)
   run              Start containers and run migrations
   logs             View application logs
   destroy          Destroy all containers, volumes, and images

@@ -44,12 +44,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # SLSA generic generator subject format: lines of "<sha256>  <filename>",
-      # base64-encoded as a single string. `extra.Checksum` on Binary entries
-      # is `sha256:<hex>`; we strip the prefix and join with two spaces.
+      # base64-encoded as a single string. GoReleaser writes two `Binary`
+      # entries per platform: the raw build output (no `extra.Checksum`) and
+      # the uploaded artifact (with `extra.Checksum: "sha256:<hex>"`). We
+      # filter for the latter — only uploaded artifacts get attestations.
       - name: Compute binary provenance subjects
         id: subjects
         run: |
-          HASHES=$(jq -r '.[] | select(.type=="Binary") | "\(.extra.Checksum | split(":")[1])  \(.name)"' dist/artifacts.json | base64 -w0)
+          HASHES=$(jq -r '.[] | select(.type=="Binary" and .extra.Checksum != null) | "\(.extra.Checksum | sub("^sha256:"; ""))  \(.name)"' dist/artifacts.json | base64 -w0)
           if [ -z "$HASHES" ]; then
             echo "::error::no Binary subjects found in dist/artifacts.json"
             exit 1

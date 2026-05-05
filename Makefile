@@ -21,7 +21,7 @@ APP_CONTAINER=app_api
 VERSION     ?= 0.1.0
 # ---------------------------------------------------------------------
 
-.PHONY: setup build prod-build run stop logs destroy clean \
+.PHONY: setup build prod-build goreleaser-check run stop logs destroy clean \
         db-migrate db-reset db-status db-wait \
         test test-pretty \
         lint fmt vet \
@@ -102,6 +102,58 @@ prod-build:
 	@echo "Snapshot artefacts written to dist/. (SBOM generation skipped — install syft to include it.)"
 	@echo "To cut a real release: git tag vX.Y.Z && git push --tags"
 
+# Validate the release pipeline end-to-end against a local snapshot. Runs
+# everything that doesn't require pushing: config syntax check, full snapshot
+# build, the same jq subjects-extraction the CI workflow performs, and a
+# version-banner smoke test on the native-arch binaries. Catches issues that
+# `goreleaser check` alone misses — for example, a malformed jq filter that
+# only manifests when applied to a real dist/artifacts.json.
+#
+# Run this before pushing a release tag.
+goreleaser-check:
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser not found. Install: https://goreleaser.com/install/"; \
+		exit 1; \
+	}
+	@command -v jq >/dev/null 2>&1 || { \
+		echo "jq not found. Install jq for the subjects-extraction step."; \
+		exit 1; \
+	}
+	@echo "==> Validating goreleaser config..."
+	@goreleaser check
+	@echo ""
+	@echo "==> Building full snapshot release..."
+	@if command -v syft >/dev/null 2>&1; then \
+		goreleaser release --snapshot --clean; \
+	else \
+		echo "(syft not installed — skipping SBOM step)"; \
+		goreleaser release --snapshot --clean --skip=sbom; \
+	fi
+	@echo ""
+	@echo "==> Verifying SLSA subject extraction matches the workflow filter..."
+	@HASHES=$$(jq -r '.[] | select(.type=="Binary" and .extra.Checksum != null) | "\(.extra.Checksum | sub("^sha256:"; ""))  \(.name)"' dist/artifacts.json); \
+	COUNT=$$(printf '%s\n' "$$HASHES" | grep -c .); \
+	if [ "$$COUNT" -eq 0 ]; then \
+		echo "FAIL: jq filter produced no Binary subjects — check .github/workflows/release.yml"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$COUNT subjects extracted:"; \
+	printf '%s\n' "$$HASHES" | sed 's/^/    /'
+	@echo ""
+	@echo "==> Smoke-testing native-arch binaries..."
+	@HOST_OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	HOST_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'); \
+	API_DIR=$$(find dist -maxdepth 1 -type d -name "api_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
+	MIG_DIR=$$(find dist -maxdepth 1 -type d -name "migrator_$${HOST_OS}_$${HOST_ARCH}*" | head -1); \
+	if [ -z "$$API_DIR" ] || [ -z "$$MIG_DIR" ]; then \
+		echo "WARN: no native-arch build found for $$HOST_OS/$$HOST_ARCH — skipping binary smoke test"; \
+	else \
+		"$$API_DIR/go-tasks-api" --version >/dev/null && echo "OK: go-tasks-api --version"; \
+		"$$MIG_DIR/go-tasks-database-migrator" --version >/dev/null && echo "OK: go-tasks-database-migrator --version"; \
+	fi
+	@echo ""
+	@echo "All goreleaser checks passed. Safe to push a release tag."
+
 # Start containers and run migrations
 run:
 	@echo "Starting development environment..."
@@ -125,9 +177,10 @@ destroy:
 	@podman image prune -f
 	@echo "Cleanup complete."
 
-# Delete all temp, build, and test folders
+# Delete all temp, build, test, and release artifacts. `dist/` is the
+# GoReleaser snapshot/release output — also covered by .gitignore.
 clean:
-	@echo "Cleaning temp, build, and test artifacts..."
+	@echo "Cleaning temp, build, test, and release artifacts..."
 	@rm -rf _tmp_/ tmp/ bin/ _BUILD_/ _test_results_/ keys/ dist/
 	@rm -rf .golangci-lint-cache/
 	@rm -f *.out *.coverprofile *.test .env
@@ -223,6 +276,7 @@ help:
 	@echo "  setup            First-time setup: copies .env, installs hooks, builds containers"
 	@echo "  build            Build dev containers and run migrations"
 	@echo "  prod-build       Snapshot the production release locally (cross-compiled binaries in dist/)"
+	@echo "  goreleaser-check Validate the release pipeline end-to-end (run before pushing a tag)"
 	@echo "  run              Start containers and run migrations"
 	@echo "  logs             View application logs"
 	@echo "  destroy          Destroy all containers, volumes, and images"
